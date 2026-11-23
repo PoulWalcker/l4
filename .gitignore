@@ -1,3 +1,3 @@
 .idea/
-/.lake/
-/tests/
+.lake/
+tests/fixtures/lake-manifest.json
