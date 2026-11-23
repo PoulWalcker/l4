@@ -1,0 +1,7 @@
+name = "l4"
+defaultTargets = ["l4"]
+
+[[lean_exe]]
+name = "l4"
+root = "Main"
+supportInterpreter = true
