@@ -1,5 +1,7 @@
 import Lint4.Rules.Declarations
 import Lint4.Rules.Terms
+import Lint4.Rules.Source
+import Lint4.Rules.Signatures
 
 namespace Lint4
 
@@ -7,6 +9,7 @@ open Lean System
 
 structure AuditPolicy where
   pureModule : Bool := false
+  specModule : Bool := false
   deniedModules : List Name := []
 
 private def checkImports (file : ElaboratedFile) (denied : List Name) : Array Finding := Id.run do
@@ -23,7 +26,8 @@ def auditSource (path : FilePath) (source : String) (policy : AuditPolicy) : IO 
   let file ← elaborateSource path source
   let declarations ← DeclarationChecks.check file policy.pureModule
   let terms ← TermChecks.check file policy.deniedModules policy.pureModule
-  let findings := checkImports file policy.deniedModules ++ declarations ++ terms
+  let signatures ← if policy.specModule then SignatureChecks.check file else pure #[]
+  let findings := signatures ++ SourceChecks.check file ++ checkImports file policy.deniedModules ++ declarations ++ terms
   let order := fun (a b : Finding) =>
     (compare a.line b.line |>.then (compare a.rule b.rule) |>.then (compare a.detail b.detail)).isLT
   return (findings.qsort order).toList.eraseReps.toArray

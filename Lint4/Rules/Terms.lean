@@ -20,7 +20,18 @@ private def partialOperations : List Name := [
   ``List.head!, ``List.getLast!, ``Option.get!, ``Array.back!, ``Array.set!, ``Array.eraseIdx!,
   ``String.toNat!, ``String.toInt!, ``String.Slice.toNat!, ``String.Slice.toInt!, ``Json.setObjVal!,
   `ByteArray.get!, `ByteSlice.get!, `FloatArray.get!, `Subarray.get!, `String.Pos.get!,
-  `Std.HashMap.get!, `Std.DHashMap.get!, `Std.HashSet.get!, `Std.TreeMap.get!, `Std.TreeSet.get!
+  `Std.HashMap.get!, `Std.DHashMap.get!, `Std.HashSet.get!, `Std.TreeMap.get!, `Std.TreeSet.get!,
+  `String.get!, `String.Pos.Raw.get!, `String.Slice.Pos.get!,
+  `Lean.LocalContext.get!, `Lean.Parser.SyntaxStack.get!, `Lean.PersistentArray.get!,
+  `Std.HashMap.Raw.get!, `Std.HashSet.Raw.get!, `Std.TreeMap.Raw.get!,
+  `Std.TreeSet.Raw.get!, `Std.DHashMap.Const.get!, `Std.DHashMap.Raw.get!,
+  `Std.DHashMap.Raw.Const.get!, `Std.DHashMap.Internal.AssocList.get!, `Std.DHashMap.Internal.Raw₀.get!,
+  `Std.DHashMap.Internal.Raw₀.Const.get!, `Std.DTreeMap.get!, `Std.DTreeMap.Const.get!,
+  `Std.DTreeMap.Raw.get!, `Std.DTreeMap.Raw.Const.get!, `Std.DTreeMap.Internal.Impl.get!,
+  `Std.DTreeMap.Internal.Impl.Const.get!, `Std.ExtDHashMap.get!, `Std.ExtDHashMap.Const.get!,
+  `Std.ExtDTreeMap.get!, `Std.ExtDTreeMap.Const.get!, `Std.ExtHashMap.get!,
+  `Std.ExtHashSet.get!, `Std.ExtTreeMap.get!, `Std.ExtTreeSet.get!,
+  `Std.Http.Headers.get!, `Std.Internal.IndexMultiMap.get!
 ]
 
 private partial def timerName? (env : Environment) (name : Name) (seen : NameSet := {}) : Option Name := do
@@ -89,7 +100,6 @@ def check (file : ElaboratedFile) (deniedModules : List Name) (pureModule : Bool
       if [``Parser.Term.dbgTrace, ``Parser.Term.doDbgTrace, ``Parser.Tactic.dbgTrace].contains info.stx.getKind then
         return acc.push ⟨line, .warning, "W12", "Debug trace"⟩
       let .ofTermInfo term := info | return acc
-      -- Lean retains an anonymous example's declaration in the token's local environment.
       if term.stx.isToken "example" then
         if let some decl := term.expr.constName?.bind context.env.find? then
           return acc ++ (← context.runCoreM (DeclarationChecks.checkOne decl line pureModule))

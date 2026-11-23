@@ -7,6 +7,7 @@ open Lean System
 structure ElaboratedFile where
   input : Parser.InputContext
   header : Syntax
+  commands : Array Syntax
   env : Environment
   infoTrees : PersistentArray Elab.InfoTree
 
@@ -33,6 +34,7 @@ private partial def elaborateCommands : FrontendM Unit := do
   if executesCode cmd then
     let line := (input.fileMap.toPosition (cmd.getPos?.getD state.cmdPos)).line
     throw <| IO.userError s!"{input.fileName}:{line}: executable command is unsupported by static audit"
+  modify fun s => { s with commands := s.commands.push cmd }
   setParserState parserState
   elabCommandAtFrontend cmd
   modify fun s =>
@@ -66,6 +68,7 @@ def elaborateSource (path : FilePath) (source : String) : IO ElaboratedFile := d
   return {
     input
     header := header.raw
+    commands := elaboration.commands
     env := state.env
     infoTrees := state.infoState.substituteLazy.get.trees }
 

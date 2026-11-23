@@ -69,14 +69,15 @@ private def scan (target : FilePath) : IO AuditOutcome := do
   return if failures > 0 then .failed else if blockers > 0 then .violations else .passed
 
 private def resolvePolicy (path root : FilePath) : IO AuditPolicy := do
-  let pureDir := root / "pure"
-  unless ← pureDir.isDir do return {}
-  let prefixPath := (← realPathNormalized pureDir).components
   let parent ← realPathNormalized (path.parent.getD root)
   let target ← realPathNormalized path
+  let policy : AuditPolicy := { specModule := parent.components.contains "spec" || target.components.contains "spec" }
+  let pureDir := root / "pure"
+  unless ← pureDir.isDir do return policy
+  let prefixPath := (← realPathNormalized pureDir).components
   if prefixPath.isPrefixOf parent.components || prefixPath.isPrefixOf target.components then
-    return { pureModule := true, deniedModules := [`io, `jobs] }
-  return {}
+    return { policy with pureModule := true, deniedModules := [`io, `jobs] }
+  return policy
 
 private def packageSearchPath (lake : Lake.LakeInstall) (root : FilePath) : IO Lean.SearchPath := do
   let cmd := (← IO.getEnv "LAKE").getD lake.lake.toString
