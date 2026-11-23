@@ -126,10 +126,15 @@ def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (line : Nat) : IO 
     let catchLine := (term.stx[2][0].getPos?.map context.fileMap.toPosition).map (·.line)
     return #[⟨catchLine.getD line, .warning, "W04", "Exception handler immediately returns success"⟩]
   if let some detail ← term.runMetaM context (discardedResult? term.lctx kind expr) then
+    if let .letE _ _ value _ _ := expr then
+      if value.consumeMData.isAppOfArity `Spec.requireThat 2 then
+        return #[⟨line, .noGo, "N07", "Discarded Spec.requireThat verdict"⟩]
     return #[⟨line, .warning, "W16", detail⟩]
   unless kind == ``Parser.Term.app do return #[]
   let some (condition, success) := checkedGuard? context.env expr | return #[]
   let some truth ← term.runMetaM context (knownTruth term.lctx condition) | return #[]
+  if truth == success && expr.isAppOf `Spec.requireThat then
+    return #[⟨line, .noGo, "N08", "Spec.requireThat always succeeds"⟩]
   return if truth == success then #[⟨line, .warning, "W17", "Check always succeeds"⟩]
     else #[⟨line, .warning, "W19", "Check always takes the failure branch"⟩]
 

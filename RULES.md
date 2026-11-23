@@ -22,6 +22,8 @@ An individual Lean file is also a valid target. Exit **0** means the audit compl
 | N04 · Partial operation | Panic syntax, partial indexing such as `xs[i]!`, or a reference to a listed partial API. Examples include `List.head!`, `Option.get!`, `Array.set!`, `String.toInt!`, `Std.HashMap.Raw.get!` and `Std.TreeMap.Raw.get!`. The finite list of qualified names lives in `partialOperations` in [Terms.lean](Lint4/Rules/Terms.lean). A user-defined `Domain.head!` is accepted. |
 | N05 · Unfinished proof | A term contains `sorryAx` or Lean reports it among a declaration's axiom dependencies. This includes `admit`, proofs using an unfinished lemma, and anonymous examples. |
 | N06 · Unprotected domain signature | Under `spec/`, inspect parameters and results of written definitions, opaque functions and function-type abbreviations. Report the declaration and the offending parameter, result or constructor field. |
+| N07 · Discarded assertion verdict | An unused Lean `let` binding holds the result of a direct call to `Spec.requireThat`. An assertion error in that value never reaches the caller. |
+| N08 · Assertion always succeeds | A direct call to `Spec.requireThat` has a guard that the constant-outcome check proves always takes the success branch. |
 | I01 · Effect in a pure module | A declaration in package-root `pure/` references `IO`, `EIO` or `BaseIO` in its type, body, or the type of a directly used constant. Type abbreviations are followed. A pure function can construct an `IO.Error`. |
 | I02 · Forbidden dependency | A file in `pure/` imports `io` or `jobs` (including submodules), or uses a constant or projection from those modules. Import diagnostics point to the import line. |
 
