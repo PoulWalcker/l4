@@ -7,9 +7,7 @@ open Lean System
 structure ElaboratedFile where
   input : Parser.InputContext
   header : Syntax
-  importEnv : Environment
   env : Environment
-  commands : Array Syntax
   infoTrees : PersistentArray Elab.InfoTree
 
 private partial def executesCode (stx : Syntax) : Bool :=
@@ -30,10 +28,11 @@ private partial def elaborateCommands : FrontendM Unit := do
     openDecls := scope.openDecls }
   let (cmd, parserState, messages) :=
     Parser.parseCommand input context state.parserState state.commandState.messages
+  if cmd.getKind == ``Parser.Command.exit then
+    throw <| IO.userError "#exit stops parsing before the end of the module"
   if executesCode cmd then
     let line := (input.fileMap.toPosition (cmd.getPos?.getD state.cmdPos)).line
     throw <| IO.userError s!"{input.fileName}:{line}: executable command is unsupported by static audit"
-  modify fun s => { s with commands := s.commands.push cmd }
   setParserState parserState
   elabCommandAtFrontend cmd
   modify fun s =>
@@ -67,9 +66,7 @@ def elaborateSource (path : FilePath) (source : String) : IO ElaboratedFile := d
   return {
     input
     header := header.raw
-    importEnv
     env := state.env
-    commands := elaboration.commands
     infoTrees := state.infoState.substituteLazy.get.trees }
 
 end Lint4

@@ -1,4 +1,3 @@
-import Lint4.Rules.Source
 import Lint4.Rules.Declarations
 import Lint4.Rules.Terms
 
@@ -10,29 +9,23 @@ structure AuditPolicy where
   pureModule : Bool := false
   deniedModules : List Name := []
 
-private def checkImports (file : ElaboratedFile) (deniedModules : List Name) : Array Finding :=
-  file.importEnv.header.imports.filterMap fun imported =>
-    if deniedModules.any (·.isPrefixOf imported.module) then
-      some ⟨1, .noGo, "I02", s!"Forbidden module dependency: {imported.module}"⟩
-    else none
-
-private def findingsInOrder (left right : Finding) : Bool :=
-  if left.line != right.line then left.line < right.line
-  else if left.rule != right.rule then left.rule < right.rule
-  else left.detail < right.detail
-
-private def sortAndDeduplicate (findings : Array Finding) : Array Finding :=
-  ((findings.qsort findingsInOrder).toList.eraseRepsBy fun left right =>
-    left.rule != "N04" && left.line == right.line &&
-      left.rule == right.rule && left.detail == right.detail).toArray
+private def checkImports (file : ElaboratedFile) (denied : List Name) : Array Finding := Id.run do
+  let mut findings := #[]
+  let `(Parser.Module.header| $[module]? $[prelude]? $imports*) := file.header | return #[]
+  for stx in imports do
+    if let `(Parser.Module.import| $[public]? $[meta]? import $[all]? $mod) := stx then
+      if denied.any (·.isPrefixOf mod.getId) then
+        let line := (file.input.fileMap.toPosition (mod.raw.getPos?.getD 0)).line
+        findings := findings.push ⟨line, .noGo, "I02", s!"Forbidden module dependency: {mod.getId}"⟩
+  return findings
 
 def auditSource (path : FilePath) (source : String) (policy : AuditPolicy) : IO (Array Finding) := do
   let file ← elaborateSource path source
-  let blocks := SourceChecks.declarationBlocks file.commands
-  let sourceFindings := SourceChecks.check source file blocks
-  let declarationFindings ← DeclarationChecks.check file blocks policy.pureModule
-  let importFindings := checkImports file policy.deniedModules
-  let termFindings ← TermChecks.check file policy.deniedModules
-  return sortAndDeduplicate (sourceFindings ++ declarationFindings ++ importFindings ++ termFindings)
+  let declarations ← DeclarationChecks.check file policy.pureModule
+  let terms ← TermChecks.check file policy.deniedModules policy.pureModule
+  let findings := checkImports file policy.deniedModules ++ declarations ++ terms
+  let order := fun (a b : Finding) =>
+    (compare a.line b.line |>.then (compare a.rule b.rule) |>.then (compare a.detail b.detail)).isLT
+  return (findings.qsort order).toList.eraseReps.toArray
 
 end Lint4

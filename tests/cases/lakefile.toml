@@ -1,0 +1,7 @@
+name = "fixtures"
+
+[[lean_lib]]
+name = "io"
+
+[[lean_lib]]
+name = "Std"

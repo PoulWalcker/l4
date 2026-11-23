@@ -5,139 +5,112 @@ namespace Lint4.ResultChecks
 
 open Lean
 
-private partial def usesProcessPipe (locals : LocalContext) (expr : Expr) : MetaM Bool := do
-  let expr := resolveLocalValue locals expr
-  let env ← getEnv
-  let structure? := match expr with
-    | .proj name _ _ => some name
-    | _ => expr.getAppFn'.constName?.bind env.getProjectionStructureName?
-  if structure? == some ``IO.Process.Child then
-    return (← Meta.whnf (← Meta.inferType expr)).isConstOf ``IO.FS.Handle
-  expr.getAppArgs.anyM (usesProcessPipe locals)
+private def returnsUnit (expr : Expr) : Bool :=
+  (expr.isAppOf ``Pure.pure || expr.isAppOf ``Except.ok) &&
+    expr.getAppArgs.back?.any fun value => value.isConstOf ``Unit.unit || value.isConstOf ``PUnit.unit
 
-private def discardedIOValue (context : Elab.ContextInfo) (term : Elab.TermInfo) : IO Bool := do
-  let expr := term.expr.consumeMData
-  let kind := term.stx.getKind
-  let discardCall := kind == ``Parser.Term.app && expr.isAppOf ``Functor.discard
-  let wildcardBind := kind == ``Parser.Term.doLetArrow &&
-    term.stx[3][0].getKind == ``Parser.Term.hole && expr.isAppOf ``Bind.bind
-  unless discardCall || wildcardBind do return false
-  term.runMetaM context do
-    let args := (← instantiateMVars expr).getAppArgs
-    let discarded := match discardCall, args with
-      | true, #[monad, type, _, action] | false, #[monad, _, type, _, action, _] =>
-        some (monad, type, action)
-      | _, _ => none
-    let some (monad, type, action) := discarded | return false
-    unless monad.isConstOf ``IO || monad.isAppOf ``EIO do return false
-    let action := resolveLocalValue term.lctx action
-    let type ← Meta.whnf type
-    if type.isConstOf ``Unit || type.isConstOf ``PUnit then return false
-    if type.isAppOf ``Except then return true
-    if action.isAppOf ``Pure.pure then return false
-    if type.isConstOf ``IO.Process.Output then return true
-    if action.isAppOf ``IO.Process.spawn || action.isAppOf ``IO.FS.readFile ||
-        action.isAppOf ``IO.FS.readBinFile then return true
-    usesProcessPipe term.lctx action
+private def fails (expr : Expr) : Bool :=
+  expr.isAppOf ``MonadExcept.throw || expr.isAppOf ``MonadExceptOf.throw || expr.isAppOf ``Except.error
 
-private def unusedExcept (context : Elab.ContextInfo) (term : Elab.TermInfo) : IO Bool := do
-  unless [``Parser.Term.let, ``Parser.Term.doLet].contains term.stx.getKind do return false
-  term.runMetaM context do
-    let .letE _ type _ body _ := (← instantiateMVars term.expr).consumeMData | return false
-    return (← Meta.whnf type).isAppOf ``Except && !body.hasLooseBVar 0
+private def emptyHandler (expr : Expr) : Bool := Id.run do
+  let mut expr := expr
+  let mut sameContinuation := false
+  if expr.isAppOf ``Bind.bind then
+    let #[_, _, _, _, action, tail] := expr.getAppArgs | return false
+    let next := tail.getLambdaBody
+    if fails next then return false
+    if next.isAppOf ``EarlyReturn.runK then
+      let branches := next.getAppArgs
+      sameContinuation := branches.back? == branches.pop.back?
+    expr := action
+  unless expr.isAppOf ``MonadExcept.tryCatch || expr.isAppOf ``MonadExceptOf.tryCatch do return false
+  let some (.lam _ _ body _) := expr.getAppArgs.back? | return false
+  let body := body.consumeMData
+  return returnsUnit body || (sameContinuation && body.isAppOf ``EarlyReturnT.return &&
+    body.getAppArgs.back?.any (·.isConstOf ``Unit.unit))
 
-private def uncheckedProcessOutput (context : Elab.ContextInfo) (term : Elab.TermInfo) : IO Bool := do
-  if term.stx.getKind == ``Parser.Term.do then return false
-  term.runMetaM context do
-    let expr := (← instantiateMVars term.expr).consumeMData
-    unless expr.isAppOf ``Bind.bind do return false
-    let #[monad, _, type, _, action, continuation] := expr.getAppArgs | return false
-    unless monad.isConstOf ``IO || monad.isAppOf ``EIO do return false
-    unless (← Meta.whnf type).isConstOf ``IO.Process.Output do return false
-    if action.isAppOf ``Pure.pure then return false
-    Meta.lambdaTelescope continuation fun binders body => do
-      let some output := binders[0]? | return false
-      let .fvar id := output | return false
-      let fields := [``IO.Process.Output.stdout, ``IO.Process.Output.stderr]
-      let env ← getEnv
-      let indices := fields.filterMap fun field => (env.getProjectionFnInfo? field).map (·.i)
-      let remaining := body.replace fun part =>
-        let textField := fields.any (part.isAppOf ·) && part.getAppArgs.back? == some output
-        let projection := match part with
-          | .proj structName index value => structName == ``IO.Process.Output && indices.contains index && value == output
-          | _ => false
-        if textField || projection then some (mkStrLit "") else none
-      return body.containsFVar id && !remaining.containsFVar id
+private def guardBranches? (expr : Expr) : Option (Expr × Bool) := do
+  guard (expr.isAppOf ``ite)
+  let #[_, condition, _, yes, no] := expr.getAppArgs | none
+  if returnsUnit yes && fails no then some (condition, true)
+  else if fails yes && returnsUnit no then some (condition, false)
+  else none
+
+/-- Inspect one assertion helper, including imported helpers such as Spec.requireThat. -/
+private def checkedGuard? (env : Environment) (expr : Expr) : Option (Expr × Bool) := do
+  if let some gate := guardBranches? expr then return gate
+  let .const name levels := expr.getAppFn | none
+  let some (.defnInfo info) := env.find? name | none
+  guard ((guardBranches? info.value.getLambdaBody).isSome)
+  let body := info.value.instantiateLevelParams info.levelParams levels
+  guardBranches? (mkAppN body expr.getAppArgs).headBeta
 
 private partial def knownTruth (locals : LocalContext) (expr : Expr) : MetaM (Option Bool) := do
   let expr := resolveLocalValue locals expr
   if expr.isConstOf ``True || expr.isConstOf ``Bool.true then return some true
   if expr.isConstOf ``False || expr.isConstOf ``Bool.false then return some false
   match expr.getAppFn.constName?, expr.getAppArgs with
-  | some ``BEq.beq, #[type, inst, left, right] =>
-    if resolveLocalValue locals left != resolveLocalValue locals right then return none
+  | some ``Bool.not, #[value] | some ``Not, #[value] => return (← knownTruth locals value).map (!·)
+  | some name, #[type, inst, left, right] =>
+    unless name == ``BEq.beq || name == ``bne do return none
+    unless resolveLocalValue locals left == resolveLocalValue locals right do return none
     let law ← Meta.mkAppOptM ``LawfulBEq #[some type, some inst]
-    return if (← Meta.synthInstance? law).isSome then some true else none
-  | some ``Eq, #[type, left, right] =>
-    if resolveLocalValue locals left == resolveLocalValue locals right then return some true
-    if type.isConstOf ``Bool && right.isConstOf ``Bool.true then return ← knownTruth locals left
+    return if (← Meta.synthInstance? law).isSome then some (name == ``BEq.beq) else none
+  | some name, #[type, left, right] =>
+    unless name == ``Eq || name == ``Ne do return none
+    if resolveLocalValue locals left == resolveLocalValue locals right then return some (name == ``Eq)
+    if name == ``Eq && type.isConstOf ``Bool && right.isConstOf ``Bool.true then return ← knownTruth locals left
     return none
   | _, _ => return none
 
-private def errorGuard? (expr : Expr) : Option (Expr × Bool) := do
-  let some ``ite := expr.getAppFn.constName? | none
-  let #[_, condition, _, yes, no] := expr.getAppArgs | none
-  let success := fun (e : Expr) => (e.isAppOf ``Pure.pure || e.isAppOf ``Except.ok) &&
-    e.getAppArgs.back?.any (fun value => value.isConstOf ``Unit.unit || value.isConstOf ``PUnit.unit)
-  let failure := fun (e : Expr) => e.isAppOf ``MonadExcept.throw || e.isAppOf ``MonadExceptOf.throw || e.isAppOf ``Except.error
-  if success yes && failure no then some (condition, true)
-  else if failure yes && success no then some (condition, false) else none
+private def lostResult? (type : Expr) : MetaM (Option String) := do
+  let type ← Meta.whnf type
+  if type.isAppOf ``Except then return some "Discarded Except result"
+  if type.isConstOf ``IO.Process.Output then return some "Discarded process output and exit status"
+  return none
 
-private partial def checkedCondition? (expr : Expr) (seen : NameSet := {}) : MetaM (Option (Expr × Bool)) := do
-  let some name := expr.getAppFn.constName? | return none
-  if seen.contains name then return none
-  let some (.defnInfo info) := (← getEnv).find? name | return none
-  Meta.lambdaTelescope info.value fun params body => do
-    let body := resolveLocalValue {} body
-    let gate ← match errorGuard? body with
-      | some (condition, success) => pure do
-        let some ``Eq := condition.getAppFn.constName? | none
-        let #[type, input, value] := condition.getAppArgs | none
-        if type.isConstOf ``Bool && value.isConstOf ``Bool.true then some (input, success) else none
-      | none => checkedCondition? body (seen.insert name)
-    let some (input, success) := gate | return none
-    let some index := params.findIdx? (· == input) | return none
-    return (expr.getAppArgs[index]?).map (·, success)
+/-- Only the standard process runner establishes that a nonzero exit status can be returned. -/
+private def onlyProcessText (action continuation : Expr) : MetaM Bool := do
+  unless action.isAppOf ``IO.Process.output do return false
+  Meta.lambdaTelescope continuation fun args body => do
+    let some output := args[0]? | return false
+    let fields := getStructureFields (← getEnv) ``IO.Process.Output
+    let withoutText := body.replace fun part =>
+      let isText := match part with
+        | .proj struct index value =>
+          struct == ``IO.Process.Output && value == output && fields[index]?.any ([`stdout, `stderr].contains ·)
+        | _ => part.getAppArgs.back? == some output &&
+          (part.isAppOf ``IO.Process.Output.stdout || part.isAppOf ``IO.Process.Output.stderr)
+      if isText then some (mkStrLit "") else none
+    return body.containsFVar output.fvarId! && !withoutText.containsFVar output.fvarId!
 
-private def vacuousCheck (context : Elab.ContextInfo) (term : Elab.TermInfo) : IO Bool := do
-  if [``Parser.Term.do, ``Parser.Term.let, ``Parser.Term.doLet].contains term.stx.getKind then return false
-  term.runMetaM context do
-    let expr := resolveLocalValue term.lctx (← instantiateMVars term.expr)
-    let gate ← if expr.isAppOf ``IO.ofExcept then
-        match expr.getAppArgs.back? with
-        | some action => checkedCondition? (resolveLocalValue term.lctx action)
-        | none => pure none
-      else match errorGuard? expr with
-        | some gate => pure (some gate)
-        | none => checkedCondition? expr
-    let some (condition, success) := gate | return false
-    return (← knownTruth term.lctx condition) == some success
-
-private def checkDiscardedResults (context : Elab.ContextInfo) (term : Elab.TermInfo)
-    (line : Nat) : IO (Array Finding) := do
-  let mut findings := #[]
-  if ← discardedIOValue context term then
-    findings := findings.push ⟨line, .warning, "W16", "Discarded IO result"⟩
-  if ← unusedExcept context term then
-    findings := findings.push ⟨line, .warning, "W16", "Unused pure Except result"⟩
-  if ← uncheckedProcessOutput context term then
-    findings := findings.push ⟨line, .warning, "W16", "Process output text used without observing exit status"⟩
-  return findings
+private def discardedResult? (kind : SyntaxNodeKind) (expr : Expr) : MetaM (Option String) := do
+  match expr.getAppFn.constName?, expr.getAppArgs with
+  | some ``Functor.discard, #[_, type, _, _] =>
+    if kind == ``Parser.Term.app then lostResult? type else return none
+  | some ``Bind.bind, #[_, _, type, _, action, continuation@(.lam _ _ body _)] =>
+    unless kind == ``Parser.Term.doLetArrow do return none
+    if !body.hasLooseBVar 0 then return ← lostResult? type
+    if ← onlyProcessText action continuation then
+      return some "Process output text used without observing the exit status"
+    return none
+  | _, _ =>
+    unless [``Parser.Term.let, ``Parser.Term.doLet].contains kind do return none
+    let .letE _ type _ body _ := expr | return none
+    if !body.hasLooseBVar 0 then lostResult? type else return none
 
 def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (line : Nat) : IO (Array Finding) := do
-  let findings ← checkDiscardedResults context term line
-  if ← vacuousCheck context term then
-    return findings.push ⟨line, .warning, "W17", "Check always succeeds"⟩
-  return findings
+  let kind := term.stx.getKind
+  let expr := (instantiateMVarsCore context.mctx term.expr).1.consumeMData
+  if kind == ``Parser.Term.doTry && emptyHandler expr then
+    let catchLine := (term.stx[2][0].getPos?.map context.fileMap.toPosition).map (·.line)
+    return #[⟨catchLine.getD line, .warning, "W04", "Exception handler immediately returns success"⟩]
+  if let some detail ← term.runMetaM context (discardedResult? kind expr) then
+    return #[⟨line, .warning, "W16", detail⟩]
+  unless kind == ``Parser.Term.app do return #[]
+  let some (condition, success) := checkedGuard? context.env expr | return #[]
+  let some truth ← term.runMetaM context (knownTruth term.lctx condition) | return #[]
+  return if truth == success then #[⟨line, .warning, "W17", "Check always succeeds"⟩]
+    else #[⟨line, .warning, "W19", "Check always takes the failure branch"⟩]
 
 end Lint4.ResultChecks
