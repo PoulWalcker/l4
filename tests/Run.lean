@@ -36,8 +36,12 @@ def main : IO Unit := do
       "Rejection.lean:7: No-Go N07 Discarded Spec.requireThat verdict",
       "Rejection.lean:10: No-Go N09 Catch suppresses the final throw in its own try block"]
     check binary project "spec/Delivery.lean" 1 [
-      "Delivery.lean:13: No-Go N06 receipt parameter batch in Array field Message.mk.state field Delivery.sent.round via Round: raw Int",
-      "Delivery.lean:21: No-Go N06 receive parameter _payload field Payload.nest.item field Payload.raw.value: raw Nat"]
+      "Delivery.lean:13: No-Go N06 Unprotected domain type: receipt parameter batch in Array field Message.mk.state field Delivery.sent.round via Round uses raw Int",
+      "Delivery.lean:21: No-Go N06 Unprotected domain type: receive parameter _payload field Payload.nest.item field Payload.raw.value uses raw Nat",
+      "Delivery.lean:26: No-Go N06 Unprotected domain type: decodeLabel parameter text in Except error uses raw String",
+      "Delivery.lean:26: No-Go N06 Unprotected domain type: decodeLabel parameter text in Except success uses raw String",
+      "Delivery.lean:29: No-Go N04 Partial operation: GetElem?.getElem! at \"xs[0]!\"",
+      "Delivery.lean:29: No-Go N04 Partial operation: List.head!"]
     check binary project "pure/Decision.lean" 1 [
       "Decision.lean:2: No-Go I02 Forbidden module dependency: Support.Adapter → io.Driver",
       "Decision.lean:4: No-Go I01 Declaration type or body references an IO effect"]

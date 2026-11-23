@@ -22,3 +22,8 @@ def receive (_payload : Payload .outer) : IO Unit := pure ()
 
 inductive Branch | leaf | next (rest : Branch)
 def closedCycle (_branch : Branch) : IO Unit := pure ()
+
+def decodeLabel (text : Except String String) := text.toOption.isSome
+
+def firstAt (xs : Array Bool) (ys : List Bool) : Bool × Bool :=
+  (xs[0]!, ys.head!)

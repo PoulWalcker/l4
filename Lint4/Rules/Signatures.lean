@@ -52,7 +52,7 @@ private partial def inspectType (type : Expr) (atPath : String) (seen : NameMap 
   let type := type.headBeta.consumeMData
   if let .letE _ _ value body _ := type then return ← inspectType (body.instantiate1 value) atPath seen
   if type.isProp || (← isProp type) then return #[]
-  if type.isSort || type.isFVar then return #[s!"{atPath}: polymorphic type {← ppExpr type}"]
+  if type.isSort || type.isFVar then return #[s!"{atPath} uses polymorphic type {← ppExpr type}"]
   if type.isForall then
     return ← forallTelescope type fun args result => do
       let mut issues := #[]
@@ -60,12 +60,17 @@ private partial def inspectType (type : Expr) (atPath : String) (seen : NameMap 
         issues := issues ++ (← inspectType (← inferType arg) s!"{atPath} parameter {← binderLabel arg i}" seen)
       return issues ++ (← inspectType result s!"{atPath} result" seen)
   let .const name levels := type.getAppFn | return #[]
-  if [``String, ``Int, ``Nat, ``Json].contains name then return #[s!"{atPath}: raw {name}"]
+  if [``String, ``Int, ``Nat, ``Json].contains name then return #[s!"{atPath} uses raw {name}"]
   let args := type.getAppArgs
   if [``IO, ``Option, ``Array, ``List, ``Except, ``Prod, ``Sum].contains name then
     let mut issues := #[]
-    for arg in args do
-      issues := issues ++ (← inspectType arg s!"{atPath} in {name}" seen)
+    for arg in args, i in [:args.size] do
+      let slot := match name with
+        | ``Except => if i == 0 then "Except error" else "Except success"
+        | ``Prod => if i == 0 then "Prod first component" else "Prod second component"
+        | ``Sum => if i == 0 then "Sum left alternative" else "Sum right alternative"
+        | _ => name.toString
+      issues := issues ++ (← inspectType arg s!"{atPath} in {slot}" seen)
     return issues
   let some path ← ((seen.find? name).getD {}).visit type name | return #[]
   let seen := seen.insert name path
@@ -119,7 +124,7 @@ def check (file : ElaboratedFile) : IO (Array Finding) := do
       let label := (privateToUserName name).toString
       let path := if signature.isForall then label else s!"{label} result"
       let issues ← inspectType signature path {}
-      findings := findings ++ issues.map fun detail => ⟨pos.line, .unprotectedSignature, detail⟩
+      findings := findings ++ issues.map fun detail => ⟨pos.line, .unprotectedSignature, s!"Unprotected domain type: {detail}"⟩
     return findings
   let (findings, _) ← action.toIO { fileName := file.input.fileName, fileMap := file.input.fileMap } { env := file.env }
   return findings

@@ -70,17 +70,28 @@ private def checkTerm (pureModule : Bool) (context : Elab.ContextInfo)
   let expr := (instantiateMVarsCore context.mctx term.expr).1.consumeMData
   let action := mkAppN (resolveLocalValue term.lctx expr.getAppFn') expr.getAppArgs
   let kind := term.stx.getKind
+  let partialFinding := fun (name : Name) => Id.run do
+    let detail := s!"Partial operation: {name}"
+    if [``GetElem?.getElem!, ``panicWithPosWithDecl, ``panicWithPos].contains name then
+      if let some r := term.stx.getRange? then
+        if r.stop.byteIdx - r.start.byteIdx <= 80 then
+          let source := r.start.extract context.fileMap.source r.stop
+          if !source.isEmpty && source != name.toString && source.all (· >= ' ') then
+            return ⟨line, .partialOperation, s!"{detail} at {reprStr source}"⟩
+    return (⟨line, .partialOperation, detail⟩ : Finding)
   let mut findings := #[]
   if term.stx.isIdent || kind == `Lean.Parser.Term.identProj then
     if let some name := expr.getAppFn'.constName? then
       if let some timer := timerName? context.env name then
         findings := findings.push ⟨line, .manualTimer, s!"Manual timer: {timer}"⟩
       if partialOperations.contains name then
-        findings := findings.push ⟨line, .partialOperation, "Partial operation"⟩
+        findings := findings.push (partialFinding name)
       if (context.env.find? name).any (·.isUnsafe) then
         findings := findings.push ⟨line, .unsafeCode, "Unsafe operation"⟩
-  if kind == ``Parser.Term.panic || kind == `«term__[_]_!» then
-    findings := findings.push ⟨line, .partialOperation, "Partial operation"⟩
+  if kind == ``Parser.Term.panic then
+    findings := findings.push (partialFinding (expr.getAppFn'.constName?.getD ``panic))
+  if kind == `«term__[_]_!» then
+    findings := findings.push (partialFinding ``GetElem?.getElem!)
   if expr.isSorry || expr.isConstOf ``sorryAx then
     findings := findings.push ⟨line, .unfinishedProof, "Depends on sorryAx"⟩
   if kind == ``Parser.Term.unsafe then
