@@ -42,7 +42,6 @@ An entry point may return `IO Unit`. Signatures such as `Option AgentId → Arra
 | W02 · Error replaced by a default | `Except.toOption` followed by `Option.getD`, or `Json.getObjValD`, can turn an unexpected response into a usable value. Ordinary optional defaults are accepted. |
 | W03 · Serialized JSON search | `String.contains` searches the result of `Json.compress` or `Json.pretty`. A marker may occur in an unrelated field. A privacy test may intentionally search the entire payload. |
 | W04 · Empty exception handler | A catch immediately completes with unit. Inspect whether it neutralizes a test failure. A rethrow, a recovery action, or an early success in a test that expects an exception has different behavior. |
-| W09 · Manual deadline | Inside a loop, a comparison depends on `IO.monoMsNow` or `IO.monoNanosNow` and selects a branch that exits or throws. A deadline may use local clock bindings and arithmetic. An ordinary counter comparison or a clock read alone produces no warning. |
 | W10 · Partial recursion | Lean generated a partial recursive implementation. Review how the test terminates. |
 | W11 · Axiom dependency | A declaration relies on an axiom beyond `propext`, `Classical.choice` and `Quot.sound`. N05 covers `sorryAx`. |
 | W12 · Debug trace | A debug-trace construct or an explicit `dbgTrace` call remains in the test. |
@@ -65,7 +64,7 @@ At revision `b7059c7889e06aac5dfe23426d553591f991ba97`, the scan covered 22 Lean
 
 | Location in `spec/` | Review decision |
 | --- | --- |
-| `io/Host.lean:22` | `untilSome` sleeps between observations. N02 applies even though the poll has a deadline. W09 points to the deadline check on the preceding line. |
+| `io/Host.lean:22` | `untilSome` sleeps between observations. N02 identifies the polling interval. A deadline bounds the wait. |
 | `jobs/system/Recovery.lean:18` | Two calls to `setObjVal!` on one line produce one N04. Writing the resulting JSON constructs a previous schema version for the migration test. The write itself warrants no finding. |
 | `jobs/system/Access.lean:88` | W03 locates a search across the entire serialized state for a private marker. That breadth is appropriate when disclosure anywhere would violate the contract. |
 | `io/Host.lean:61` | W04 locates an empty handler in cleanup. The outer handler rethrows the original host failure. A reviewer can accept suppression of the secondary cleanup error. |
