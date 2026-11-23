@@ -1,6 +1,11 @@
 name = "l4"
 defaultTargets = ["l4"]
 
+[[lean_lib]]
+name = "Lint4Core"
+roots = ["Lint4"]
+globs = ["Lint4.+"]
+
 [[lean_exe]]
 name = "l4"
 root = "Lint4"
