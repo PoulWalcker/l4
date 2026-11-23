@@ -56,6 +56,15 @@ An entry point may return `IO Unit`. Signatures such as `Option AgentId → Arra
 | W20 · Polling retries on any error | At a direct `Spec.untilSome` call, a match or pattern-let in the callback returns `pure none` for an arbitrary `Except.error`. Check which errors justify another attempt. The finding points to the polling call. |
 | B03 · Audit coverage | Directory scans warn once for each file under `spec/` whose extension differs from `.lean`, including configuration files and files without an extension. |
 
+## Could Be Better
+
+| Rule | What to review |
+| --- | --- |
+| C03 · Missing value skips an assertion | An `Option` match executes `IO.ofExcept (Spec.requireThat …)` for `some` and immediately succeeds with unit for `none`. Check whether the scenario requires a value. The finding points to the match and includes the assertion label when it is a string literal. |
+| C05 · Whole JSON object equality | A direct `Spec.requireThat` compares an explicitly constructed `Json.mkObj` or `Json.obj` using standard JSON equality. An extra field changes the verdict. Exact-schema tests may intentionally require this. |
+
+These findings alone leave the CLI exit code at 0.
+
 ## Choosing the check
 
 Use literal matching or a regexp for an explicitly specified text format. Lean imports and command modifiers have parsed source locations. Calls, overloads, local bindings, effects and proof dependencies have identities and types after elaboration. Searching for `sorry`, `sleep`, `get!` or `catch` in raw source would also match strings, comments and unrelated declarations.

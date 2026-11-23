@@ -12,6 +12,37 @@ private def returnsUnit (expr : Expr) : Bool :=
 private def fails (expr : Expr) : Bool :=
   expr.isAppOf ``MonadExcept.throw || expr.isAppOf ``MonadExceptOf.throw || expr.isAppOf ``Except.error
 
+private def skippedAssertion? (locals : LocalContext) (expr : Expr) : MetaM (Option String) := do
+  let some matcher ← Meta.matchMatcherApp? expr | return none
+  let #[discr] := matcher.discrs | return none
+  if (resolveLocalValue locals discr).isAppOf ``Option.some then return none
+  let type ← Meta.whnf (← Meta.inferType discr)
+  unless type.isAppOfArity ``Option 1 do return none
+  let element := type.appArg!
+  let branchAt := fun value => Meta.reduceMatcher? { matcher with discrs := #[value] }.toExpr
+  let .reduced absent ← branchAt (← Meta.mkNone element) | return none
+  unless returnsUnit absent do return none
+  Meta.withLocalDeclD `value element fun value => do
+    let .reduced present ← branchAt (← Meta.mkSome element value) | return none
+    unless present.isAppOf ``IO.ofExcept do return none
+    let verdict := present.appArg!.consumeMData
+    unless verdict.isAppOfArity `Spec.requireThat 2 do return none
+    let label := (Meta.getStringValue? verdict.getAppArgs[0]!).map reprStr
+    return some s!"Option.none skips {label.getD "Spec.requireThat"}"
+
+private def comparesWholeJsonObject (locals : LocalContext) (condition : Expr) : Bool := Id.run do
+  let condition := resolveLocalValue locals condition
+  let isObject := fun operand =>
+    let value := resolveLocalValue locals operand
+    value.isAppOf ``Json.mkObj || value.isAppOf ``Json.obj
+  if condition.isAppOf ``BEq.beq then
+    let #[_, inst, lhs, rhs] := condition.getAppArgs | return false
+    return inst.isConstOf ``Json.instBEq && (isObject lhs || isObject rhs)
+  unless condition.isAppOf ``Decidable.decide do return false
+  let #[prop, _] := condition.getAppArgs | return false
+  let #[type, lhs, rhs] := prop.getAppArgs | return false
+  return prop.isAppOf ``Eq && type.isConstOf ``Json && (isObject lhs || isObject rhs)
+
 private partial def retriesOnAnyError (action : Expr) : MetaM Bool := do
   let action := action.consumeMData
   if let .letE _ _ value body _ := action then
@@ -159,6 +190,9 @@ private def discardedResult? (locals : LocalContext) (kind : SyntaxNodeKind) (ex
 
 def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (kind : SyntaxNodeKind)
     (expr : Expr) (line : Nat) : IO (Array Finding) := do
+  if kind == ``Parser.Term.match || kind == ``Parser.Term.doMatch then
+    if let some detail ← term.runMetaM context (skippedAssertion? term.lctx expr) then
+      return #[⟨line, .couldBeBetter, "C03", detail⟩]
   if kind == ``Parser.Term.app && expr.isAppOf `Spec.untilSome then
     if let some callback := expr.getAppArgs[2]? then
       if ← term.runMetaM context (retriesOnAnyError callback) then
@@ -176,11 +210,14 @@ def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (kind : SyntaxNode
         return #[⟨line, .noGo, "N07", s!"Discarded {name} verdict"⟩]
     return #[⟨line, .warning, "W16", detail⟩]
   unless kind == ``Parser.Term.app do return #[]
-  let some (condition, success) := checkedGuard? context.env expr | return #[]
-  let some truth ← term.runMetaM context (knownTruth term.lctx condition) | return #[]
-  if truth == success && expr.isAppOf `Spec.requireThat then
-    return #[⟨line, .noGo, "N08", "Spec.requireThat always succeeds"⟩]
-  return if truth == success then #[⟨line, .warning, "W17", "Check always succeeds"⟩]
-    else #[⟨line, .warning, "W19", "Check always takes the failure branch"⟩]
+  if let some (condition, success) := checkedGuard? context.env expr then
+    if let some truth ← term.runMetaM context (knownTruth term.lctx condition) then
+      if truth == success && expr.isAppOf `Spec.requireThat then
+        return #[⟨line, .noGo, "N08", "Spec.requireThat always succeeds"⟩]
+      return if truth == success then #[⟨line, .warning, "W17", "Check always succeeds"⟩]
+        else #[⟨line, .warning, "W19", "Check always takes the failure branch"⟩]
+  if expr.isAppOfArity `Spec.requireThat 2 && comparesWholeJsonObject term.lctx expr.appArg! then
+    return #[⟨line, .couldBeBetter, "C05", "Assertion compares an entire JSON object for equality"⟩]
+  return #[]
 
 end Lint4.ResultChecks
