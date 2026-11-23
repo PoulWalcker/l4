@@ -3,5 +3,5 @@ defaultTargets = ["l4"]
 
 [[lean_exe]]
 name = "l4"
-root = "Main"
+root = "Lint4"
 supportInterpreter = true
