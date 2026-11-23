@@ -51,7 +51,7 @@ An entry point may return `IO Unit`. Signatures such as `Option AgentId → Arra
 | W16 · Lost result | The code discards an `Except` or `IO.Process.Output`, leaves a binding of that type unused, or uses only stdout/stderr from a directly bound `IO.Process.output`. An unused local binding of `output.exitCode` still leaves the status unchecked. W16 also reports discarded file reads, process spawns and non-unit results of child pipe operations. |
 | W17 / W19 · Constant assertion outcome | A recognized unit-success/error guard always selects success (W17) or failure (W19). Includes literal conditions, reflexive equality and inequality, negation and one level of a simple assertion helper such as `requireThat`. Boolean equality needs a `LawfulBEq` instance. |
 | W20 · Polling retries on any error | At a direct `Spec.untilSome` call, a match or pattern-let in the callback returns `pure none` for an arbitrary `Except.error`. Check which errors justify another attempt. The finding points to the polling call. |
-| B03 · Audit coverage | Directory scans report Haskell, PureScript, JavaScript, TypeScript and HTML files for separate review. A browser bridge can legitimately accompany Lean assertions. |
+| B03 · Audit coverage | Directory scans warn once for each file under `spec/` whose extension differs from `.lean`, including configuration files and files without an extension. |
 
 ## Choosing the check
 

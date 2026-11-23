@@ -52,8 +52,8 @@ private def scan (target : FilePath) : IO AuditOutcome := do
   let files ← paths.filterM fun path => return !(← path.isDir)
   let files := files.qsort (fun a b => a.toString < b.toString)
   for path in files do
-    if ["purs", "hs", "js", "ts", "html"].any (some · == path.extension) then
-      IO.println s!"{path}:0: Warning B03 Non-Lean source outside audit coverage"
+    if path.extension != some "lean" && path.parent.any (·.components.contains "spec") then
+      IO.println s!"{path}:0: Warning B03 Non-Lean file under spec/"
   let sources := files.filter isLeanSource
   if sources.isEmpty then
     IO.eprintln "No Lean source files found"
