@@ -57,6 +57,6 @@ private partial def commentLines (ctx : Parser.InputContext) (env : Environment)
 
 def check (file : ElaboratedFile) : Array Finding :=
   let lines := (#[file.header] ++ file.commands).flatMap (commentLines file.input file.env)
-  lines.map fun line => ⟨line, .noGo, "N01", "Comment"⟩
+  lines.map fun line => ⟨line, .comment, "Comment"⟩
 
 end Lint4.SourceChecks

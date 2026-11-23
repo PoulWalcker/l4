@@ -7,15 +7,9 @@ namespace Lint4
 
 open Lean System
 
-structure AuditPolicy where
-  projectRoot : FilePath := "."
-  pureModule : Bool := false
-  specModule : Bool := false
-  deniedModules : List Name := []
-
-private partial def forbiddenChain (env : Environment) (root : FilePath) (denied : List Name)
+private partial def forbiddenChain (env : Environment) (root : FilePath)
     (mod : Name) : StateT (NameMap (Option (List Name))) IO (Option (List Name)) := do
-  if denied.any (·.isPrefixOf mod) then return some [mod]
+  if forbiddenInPure mod then return some [mod]
   if let some result := (← get).find? mod then return result
   let path ← findOLean mod
   let mut result := none
@@ -28,7 +22,7 @@ private partial def forbiddenChain (env : Environment) (root : FilePath) (denied
       | some data => pure data.imports
       | none => pure (← readModuleData path).1.imports
     for dep in imports do
-      if let some tail ← forbiddenChain env root denied dep.module then
+      if let some tail ← forbiddenChain env root dep.module then
         result := some (mod :: tail)
         break
   modify (·.insert mod result)
@@ -36,25 +30,26 @@ private partial def forbiddenChain (env : Environment) (root : FilePath) (denied
 
 private def checkImports (file : ElaboratedFile) (policy : AuditPolicy) :
     StateT (NameMap (Option (List Name))) IO (Array Finding) := do
-  if policy.deniedModules.isEmpty then return #[]
+  let some root := policy.pureRoot? | return #[]
   let `(Parser.Module.header| $[module]? $[prelude]? $imports*) := file.header | return #[]
   let mut findings := #[]
   for stx in imports do
     if let `(Parser.Module.import| $[public]? $[meta]? import $[all]? $mod) := stx then
-      if let some chain ← forbiddenChain file.env policy.projectRoot policy.deniedModules mod.getId then
+      if let some chain ← forbiddenChain file.env root mod.getId then
         let line := (file.input.fileMap.toPosition (mod.raw.getPos?.getD 0)).line
         let path := String.intercalate " → " (chain.map toString)
-        findings := findings.push ⟨line, .noGo, "I02", s!"Forbidden module dependency: {path}"⟩
+        findings := findings.push ⟨line, .forbiddenDependency, s!"Forbidden module dependency: {path}"⟩
   return findings
 
-def auditSource (path : FilePath) (source : String) (policy : AuditPolicy) : IO (Array Finding) := do
-  let file ← elaborateSource path source
-  let declarations ← DeclarationChecks.check file policy.pureModule
-  let terms ← TermChecks.check file policy.deniedModules policy.pureModule
+def auditSource (path : FilePath) (source : String) (policy : AuditPolicy) (mainModule : Name) : IO (Array Finding) := do
+  let file ← elaborateSource path source mainModule
+  let pureModule := policy.pureRoot?.isSome
+  let declarations ← DeclarationChecks.check file pureModule
+  let terms ← TermChecks.check file pureModule
   let signatures ← if policy.specModule then SignatureChecks.check file else pure #[]
   let findings := signatures ++ SourceChecks.check file ++ (← (checkImports file policy).run' {}) ++ declarations ++ terms
   let order := fun (a b : Finding) =>
-    (compare a.line b.line |>.then (compare a.rule b.rule) |>.then (compare a.detail b.detail)).isLT
+    (compare a.line b.line |>.then (compare a.rule.code b.rule.code) |>.then (compare a.detail b.detail)).isLT
   return (findings.qsort order).toList.eraseReps.toArray
 
 end Lint4

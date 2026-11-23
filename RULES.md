@@ -12,6 +12,8 @@ lake build l4
 
 An individual Lean file is also a valid target. Exit **0** means the audit completed with no blocking findings, **1** means at least one file broke a blocking rule, and **2** means the audit was incomplete. In a directory scan, analysis errors take precedence over violations. A directory with no Lean source gives 2. Lint4 skips Lake configuration, build directories and linked subdirectories. It rejects early `#exit` and explicit executable command syntax such as `#eval`, including quoted occurrences. Running the scenarios themselves is a separate step in Sapiens4 (`lake -d spec test`).
 
+Run Lint4's five end-to-end checks from this checkout with `lake env lean --run tests/Run.lean`. The runner builds the auditor and creates its fixture package in a temporary directory.
+
 ## Blocking rules
 
 | Rule | Evidence required by Lint4 |
@@ -34,7 +36,7 @@ A blocking finding records a violation of the audit policy. For example, N02 est
 
 N06 follows transparent aliases and checks container arguments and callback signatures recursively. Raw `String`, `Int`, `Nat`, `Lean.Json` and polymorphic types such as `{α : Type}` produce a finding. For example, `abbrev Round := Int` exposes `Int` to a scenario taking a `Round`. A sum constructor `Value.number (n : Nat)` also admits an unrestricted value. The rule uses constructor declarations for every domain type.
 
-A closed enumeration, an identifier with a private constructor and a record of protected fields can cross the boundary. For indexed types, N06 skips constructors whose result index has a conflicting constructor or literal. An unknown index keeps all potentially reachable constructors in scope.
+A closed enumeration, an identifier with a private constructor and a record of protected fields can cross the boundary. For indexed types, N06 skips constructors whose result index has a conflicting constructor or literal. An unknown index keeps all potentially reachable constructors in scope. Recursive fields are checked at their own indices. A repeated instance ends that path. If a family keeps producing distinct instances, the auditor reports incomplete analysis (exit 2) at 64 distinct structural shapes on one path. Changing only a constructor tag does not consume this budget. Strictly shrinking nested types can continue beyond that limit.
 
 A public constructor can constrain a field by requiring a proof about it. Lint4 simplifies the proof obligation before checking which fields it depends on, so `value = value` provides no protection. This is a structural check. The strength of an arbitrary domain predicate still requires review.
 

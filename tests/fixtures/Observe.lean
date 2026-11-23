@@ -9,3 +9,8 @@ def observe (cmd : IO.Process.SpawnArgs) : IO Unit := do
   match (Json.parse output.stdout).toOption with
   | some reply => IO.ofExcept (Spec.requireThat "ready" (reply == Json.mkObj [("ready", .bool true)]))
   | none => pure ()
+
+abbrev App := IO
+
+def discardRead : App Unit := do
+  let _ ← IO.FS.readFile "response"

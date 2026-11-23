@@ -139,8 +139,11 @@ private partial def usesProcessPipe (locals : LocalContext) (expr : Expr) : Meta
     return (← Meta.whnf (← Meta.inferType expr)).isConstOf ``IO.FS.Handle
   expr.getAppArgs.anyM (usesProcessPipe locals)
 
+private def isIOAction (type : Expr) : MetaM Bool := do
+  return (← Meta.whnfUntil type ``EIO).isSome || (← Meta.whnfUntil type ``BaseIO).isSome
+
 private def lostResult? (type : Expr) : MetaM (Option String) := do
-  if (← Meta.whnfUntil type ``EIO).isSome || (← Meta.whnfUntil type ``BaseIO).isSome then
+  if ← isIOAction type then
     return some "Discarded IO action without executing it"
   let type ← Meta.whnf type
   if type.isAppOf ``Except then return some "Discarded Except result"
@@ -164,7 +167,7 @@ private def ignoresProcessStatus (action continuation : Expr) : MetaM Bool := do
 
 private def discardedAction? (locals : LocalContext) (monad type action : Expr) : MetaM (Option String) := do
   if let some detail ← lostResult? type then return some detail
-  unless monad.isConstOf ``IO || monad.isAppOf ``EIO do return none
+  unless ← isIOAction (mkApp monad type) do return none
   let action := resolveLocalValue locals action
   if action.isAppOf ``IO.Process.spawn || action.isAppOf ``IO.FS.readFile || action.isAppOf ``IO.FS.readBinFile then
     return some "Discarded file read or spawned process"
@@ -188,36 +191,37 @@ private def discardedResult? (locals : LocalContext) (kind : SyntaxNodeKind) (ex
     let .letE _ type _ body _ := expr | return none
     if !body.hasLooseBVar 0 then lostResult? type else return none
 
-def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (kind : SyntaxNodeKind)
-    (expr : Expr) (line : Nat) : IO (Array Finding) := do
+def check (stx : Syntax) (expr : Expr) (fileMap : FileMap) (line : Nat) : MetaM (Option Finding) := do
+  let kind := stx.getKind
+  let locals ← getLCtx
   if kind == ``Parser.Term.match || kind == ``Parser.Term.doMatch then
-    if let some detail ← term.runMetaM context (skippedAssertion? term.lctx expr) then
-      return #[⟨line, .couldBeBetter, "C03", detail⟩]
+    if let some detail ← skippedAssertion? locals expr then
+      return some ⟨line, .skippedAssertion, detail⟩
   if kind == ``Parser.Term.app && expr.isAppOf `Spec.untilSome then
     if let some callback := expr.getAppArgs[2]? then
-      if ← term.runMetaM context (retriesOnAnyError callback) then
-        return #[⟨line, .warning, "W20", "Polling callback retries on any Except error"⟩]
+      if ← retriesOnAnyError callback then
+        return some ⟨line, .unconditionalRetry, "Polling callback retries on any Except error"⟩
   if kind == ``Parser.Term.doTry then
     if let some caught := emptyCatch? expr then
-      let catchLine := ((term.stx[2][0].getPos?.map context.fileMap.toPosition).map (·.line)).getD line
+      let catchLine := ((stx[2][0].getPos?.map fileMap.toPosition).map (·.line)).getD line
       if catchesFinalThrow caught then
-        return #[⟨catchLine, .noGo, "N09", "Catch suppresses the final throw in its own try block"⟩]
-      return #[⟨catchLine, .warning, "W04", "Exception handler immediately returns success"⟩]
-  if let some detail ← term.runMetaM context (discardedResult? term.lctx kind expr) then
+        return some ⟨catchLine, .caughtFailure, "Catch suppresses the final throw in its own try block"⟩
+      return some ⟨catchLine, .emptyHandler, "Exception handler immediately returns success"⟩
+  if let some detail ← discardedResult? locals kind expr then
     if let .letE _ _ value _ _ := expr then
       let assertions := [`Spec.requireThat, `Spec.fieldsMatch]
       if let some name := assertions.find? (fun name => value.consumeMData.isAppOfArity name 2) then
-        return #[⟨line, .noGo, "N07", s!"Discarded {name} verdict"⟩]
-    return #[⟨line, .warning, "W16", detail⟩]
-  unless kind == ``Parser.Term.app do return #[]
-  if let some (condition, success) := checkedGuard? context.env expr then
-    if let some truth ← term.runMetaM context (knownTruth term.lctx condition) then
+        return some ⟨line, .discardedVerdict, s!"Discarded {name} verdict"⟩
+    return some ⟨line, .lostResult, detail⟩
+  unless kind == ``Parser.Term.app do return none
+  if let some (condition, success) := checkedGuard? (← getEnv) expr then
+    if let some truth ← knownTruth locals condition then
       if truth == success && expr.isAppOf `Spec.requireThat then
-        return #[⟨line, .noGo, "N08", "Spec.requireThat always succeeds"⟩]
-      return if truth == success then #[⟨line, .warning, "W17", "Check always succeeds"⟩]
-        else #[⟨line, .warning, "W19", "Check always takes the failure branch"⟩]
-  if expr.isAppOfArity `Spec.requireThat 2 && comparesWholeJsonObject term.lctx expr.appArg! then
-    return #[⟨line, .couldBeBetter, "C05", "Assertion compares an entire JSON object for equality"⟩]
-  return #[]
+        return some ⟨line, .vacuousAssertion, "Spec.requireThat always succeeds"⟩
+      return if truth == success then some ⟨line, .constantSuccess, "Check always succeeds"⟩
+        else some ⟨line, .constantFailure, "Check always takes the failure branch"⟩
+  if expr.isAppOfArity `Spec.requireThat 2 && comparesWholeJsonObject locals expr.appArg! then
+    return some ⟨line, .wholeJsonEquality, "Assertion compares an entire JSON object for equality"⟩
+  return none
 
 end Lint4.ResultChecks

@@ -30,12 +30,14 @@ def main : IO Unit := do
     check binary project "Observe.lean" 0 [
       "Observe.lean:7: Warning W16 Process exit status is unobserved",
       "Observe.lean:9: Could Be Better C03 Option.none skips \"ready\"",
-      "Observe.lean:10: Could Be Better C05 Assertion compares an entire JSON object for equality"]
-    check binary project "Rejection.lean" 1 [
-      "Rejection.lean:6: No-Go N07 Discarded Spec.requireThat verdict",
-      "Rejection.lean:9: No-Go N09 Catch suppresses the final throw in its own try block"]
+      "Observe.lean:10: Could Be Better C05 Assertion compares an entire JSON object for equality",
+      "Observe.lean:16: Warning W16 Discarded file read or spawned process"]
+    check binary project "client/Checks/Rejection.lean" 1 [
+      "Rejection.lean:7: No-Go N07 Discarded Spec.requireThat verdict",
+      "Rejection.lean:10: No-Go N09 Catch suppresses the final throw in its own try block"]
     check binary project "spec/Delivery.lean" 1 [
-      "Delivery.lean:13: No-Go N06 receipt parameter batch in Array field Message.mk.state field Delivery.sent.round via Round: raw Int"]
+      "Delivery.lean:13: No-Go N06 receipt parameter batch in Array field Message.mk.state field Delivery.sent.round via Round: raw Int",
+      "Delivery.lean:21: No-Go N06 receive parameter _payload field Payload.nest.item field Payload.raw.value: raw Nat"]
     check binary project "pure/Decision.lean" 1 [
       "Decision.lean:2: No-Go I02 Forbidden module dependency: Support.Adapter → io.Driver",
       "Decision.lean:4: No-Go I01 Declaration type or body references an IO effect"]
@@ -49,4 +51,5 @@ def main : IO Unit := do
       "response.json:0: Warning B03 Non-Lean file under spec/",
       "Boot.lean:1: No-Go N02 Manual timer: IO.sleep",
       "Boot.lean:2: No-Go N02 Manual timer: IO.sleep",
-      "Audited 2 Lean files; 1 files with No-Go; 1 analysis errors"] ["Broken.lean", "Type mismatch"]
+      "Audited 3 Lean files; 1 files with No-Go; 2 analysis errors"]
+      ["Broken.lean", "Type mismatch", "Growing.lean", "N06 could not finish inspecting Chain"]

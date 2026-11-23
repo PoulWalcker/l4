@@ -24,17 +24,17 @@ def checkOne (info : ConstantInfo) (line : Nat) (pureModule : Bool) : CoreM (Arr
   let env ← getEnv
   let mut findings := #[]
   if info.isUnsafe then
-    findings := findings.push ⟨line, .noGo, "N03", "Unsafe declaration"⟩
+    findings := findings.push ⟨line, .unsafeCode, "Unsafe declaration"⟩
   let implementation := ((env.find? (Compiler.mkUnsafeRecName info.name)).filter (·.isPartial)).getD info
   if implementation.isPartial then
-    findings := findings.push ⟨line, .warning, "W10", "Partial recursive definition"⟩
+    findings := findings.push ⟨line, .partialRecursion, "Partial recursive definition"⟩
   for axiomName in ← collectAxioms implementation.name do
     if axiomName == ``sorryAx then
-      findings := findings.push ⟨line, .noGo, "N05", "Depends on sorryAx"⟩
+      findings := findings.push ⟨line, .unfinishedProof, "Depends on sorryAx"⟩
     else unless [``propext, ``Classical.choice, ``Quot.sound].contains axiomName do
-      findings := findings.push ⟨line, .warning, "W11", s!"Depends on axiom {axiomName}"⟩
+      findings := findings.push ⟨line, .axiomDependency, s!"Depends on axiom {axiomName}"⟩
   if pureModule && usesIO env implementation then
-    findings := findings.push ⟨line, .noGo, "I01", "Declaration type or body references an IO effect"⟩
+    findings := findings.push ⟨line, .effectInPureModule, "Declaration type or body references an IO effect"⟩
   return findings
 
 private def checkDeclarations (pureModule : Bool) : CoreM (Array Finding) := do

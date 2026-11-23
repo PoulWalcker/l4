@@ -1,18 +1,18 @@
 import Lint4.Rules.Declarations
 import Lint4.Rules.Results
+import Lint4.Policy
 
 namespace Lint4.TermChecks
 
 open Lean
 
-private def forbiddenReference (env : Environment) (deniedModules : List Name)
-    (expr : Expr) : Option String := do
+private def forbiddenReference (env : Environment) (expr : Expr) : Option String := do
   let name ← match expr with
     | .proj structureName _ _ => some structureName
     | _ => expr.getAppFn'.constName?
   let index ← env.getModuleIdxFor? name
   let origin ← env.header.moduleNames[index]?
-  guard (deniedModules.any (·.isPrefixOf origin))
+  guard (forbiddenInPure origin)
   return s!"Forbidden module dependency: {name} from {origin}"
 
 private def partialOperations : List Name := [
@@ -52,20 +52,20 @@ private def usesErrorFallback (locals : LocalContext) (action : Expr) : Bool := 
 
 private def applicationFinding? (locals : LocalContext) (action : Expr) (line : Nat) : Option Finding := do
   if usesErrorFallback locals action then
-    return ⟨line, .warning, "W02", "Error information replaced by a default"⟩
+    return ⟨line, .errorFallback, "Error information replaced by a default"⟩
   if action.isAppOf ``dbgTrace && action.getAppArgs.size == 3 then
-    return ⟨line, .warning, "W12", "Debug trace"⟩
+    return ⟨line, .debugTrace, "Debug trace"⟩
   guard (action.isAppOf ``String.contains || action.isAppOf ``String.Slice.contains)
   let #[_, _, _, _, receiver, _, _] := action.getAppArgs | none
   let text := resolveLocalValue locals receiver
   if text.isAppOf ``Json.compress || text.isAppOf ``Json.pretty then
-    return ⟨line, .warning, "W03", "Substring search over serialized JSON"⟩
+    return ⟨line, .serializedJsonSearch, "Substring search over serialized JSON"⟩
   if text.isAppOf ``IO.Error.toString ||
       (text.isAppOf ``ToString.toString && text.getAppArgs[0]?.any (·.isConstOf ``IO.Error)) then
-    return ⟨line, .warning, "W13", "Substring search over a formatted IO error"⟩
+    return ⟨line, .formattedErrorSearch, "Substring search over a formatted IO error"⟩
   none
 
-private def checkTerm (deniedModules : List Name) (context : Elab.ContextInfo)
+private def checkTerm (pureModule : Bool) (context : Elab.ContextInfo)
     (term : Elab.TermInfo) (line : Nat) : IO (Array Finding) := do
   let expr := (instantiateMVarsCore context.mctx term.expr).1.consumeMData
   let action := mkAppN (resolveLocalValue term.lctx expr.getAppFn') expr.getAppArgs
@@ -74,38 +74,41 @@ private def checkTerm (deniedModules : List Name) (context : Elab.ContextInfo)
   if term.stx.isIdent || kind == `Lean.Parser.Term.identProj then
     if let some name := expr.getAppFn'.constName? then
       if let some timer := timerName? context.env name then
-        findings := findings.push ⟨line, .noGo, "N02", s!"Manual timer: {timer}"⟩
+        findings := findings.push ⟨line, .manualTimer, s!"Manual timer: {timer}"⟩
       if partialOperations.contains name then
-        findings := findings.push ⟨line, .noGo, "N04", "Partial operation"⟩
+        findings := findings.push ⟨line, .partialOperation, "Partial operation"⟩
       if (context.env.find? name).any (·.isUnsafe) then
-        findings := findings.push ⟨line, .noGo, "N03", "Unsafe operation"⟩
+        findings := findings.push ⟨line, .unsafeCode, "Unsafe operation"⟩
   if kind == ``Parser.Term.panic || kind == `«term__[_]_!» then
-    findings := findings.push ⟨line, .noGo, "N04", "Partial operation"⟩
+    findings := findings.push ⟨line, .partialOperation, "Partial operation"⟩
   if expr.isSorry || expr.isConstOf ``sorryAx then
-    findings := findings.push ⟨line, .noGo, "N05", "Depends on sorryAx"⟩
+    findings := findings.push ⟨line, .unfinishedProof, "Depends on sorryAx"⟩
   if kind == ``Parser.Term.unsafe then
-    findings := findings.push ⟨line, .noGo, "N03", "Unsafe operation"⟩
-  if let some detail := forbiddenReference context.env deniedModules expr then
-    findings := findings.push ⟨line, .noGo, "I02", detail⟩
+    findings := findings.push ⟨line, .unsafeCode, "Unsafe operation"⟩
+  if pureModule then
+    if let some detail := forbiddenReference context.env expr then
+      findings := findings.push ⟨line, .forbiddenDependency, detail⟩
   if kind == ``Parser.Term.app then
     if let some finding := applicationFinding? term.lctx action line then
       findings := findings.push finding
-  return findings ++ (← ResultChecks.check context term kind expr line)
+  if let some finding ← term.runMetaM context (ResultChecks.check term.stx expr context.fileMap line) then
+    findings := findings.push finding
+  return findings
 
-def check (file : ElaboratedFile) (deniedModules : List Name) (pureModule : Bool) : IO (Array Finding) := do
+def check (file : ElaboratedFile) (pureModule : Bool) : IO (Array Finding) := do
   let mut findings := #[]
   for tree in file.infoTrees do
     findings ← tree.foldInfoM (init := findings) fun context info acc => do
       let some pos := info.stx.getPos? | return acc
       let line := (file.input.fileMap.toPosition pos).line
       if [``Parser.Term.dbgTrace, ``Parser.Term.doDbgTrace, ``Parser.Tactic.dbgTrace].contains info.stx.getKind then
-        return acc.push ⟨line, .warning, "W12", "Debug trace"⟩
+        return acc.push ⟨line, .debugTrace, "Debug trace"⟩
       let .ofTermInfo term := info | return acc
       if term.stx.isToken "example" then
         if let some decl := term.expr.constName?.bind context.env.find? then
           return acc ++ (← context.runCoreM (DeclarationChecks.checkOne decl line pureModule))
       if term.isBinder then return acc
-      return acc ++ (← checkTerm deniedModules context term line)
+      return acc ++ (← checkTerm pureModule context term line)
   return findings
 
 end Lint4.TermChecks

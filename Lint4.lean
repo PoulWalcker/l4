@@ -1,5 +1,6 @@
 import Lint4.Audit
-import Lake.Config.InstallPath
+import Lake.DSL
+import Lake.Load.Workspace
 
 open Lean System Lint4
 
@@ -24,12 +25,15 @@ private def AuditOutcome.exitCode : AuditOutcome → UInt32
   | .violations => 1
   | .failed => 2
 
-private def auditFile (path : FilePath) (policy : AuditPolicy) : IO AuditOutcome := do
+private def printFinding (path : FilePath) (finding : Finding) : IO Unit :=
+  IO.println s!"{path}:{finding.line}: {finding.rule.severity} {finding.rule.code} {finding.detail}"
+
+private def auditFile (path : FilePath) (policy : AuditPolicy) (mainModule : Name) : IO AuditOutcome := do
   let source ← IO.FS.readFile path
-  let findings ← auditSource path source policy
+  let findings ← auditSource path source policy mainModule
   for finding in findings do
-    IO.println s!"{path}:{finding.line}: {finding.level} {finding.rule} {finding.detail}"
-  return if findings.any (·.level == .noGo) then .violations else .passed
+    printFinding path finding
+  return if findings.any (·.rule.severity == .noGo) then .violations else .passed
 
 private def auditorSource : String := by_elab
   return Lean.toExpr (← IO.FS.realPath (← Lean.getFileName)).toString
@@ -53,7 +57,7 @@ private def scan (target : FilePath) : IO AuditOutcome := do
   let files := files.qsort (fun a b => a.toString < b.toString)
   for path in files do
     if path.extension != some "lean" && path.parent.any (·.components.contains "spec") then
-      IO.println s!"{path}:0: Warning B03 Non-Lean file under spec/"
+      printFinding path ⟨0, .nonLeanFile, "Non-Lean file under spec/"⟩
   let sources := files.filter isLeanSource
   if sources.isEmpty then
     IO.eprintln "No Lean source files found"
@@ -76,22 +80,42 @@ private def resolvePolicy (path root : FilePath) : IO AuditPolicy := do
   unless ← pureDir.isDir do return policy
   let prefixPath := (← realPathNormalized pureDir).components
   if prefixPath.isPrefixOf parent.components || prefixPath.isPrefixOf target.components then
-    return { policy with projectRoot := ← realPathNormalized root, pureModule := true, deniedModules := [`io, `jobs] }
+    return { policy with pureRoot? := some (← realPathNormalized root) }
   return policy
 
-private def packageSearchPath (lake : Lake.LakeInstall) (root : FilePath) : IO Lean.SearchPath := do
-  let cmd := (← IO.getEnv "LAKE").getD lake.lake.toString
-  let env ← IO.Process.run { cmd, args := #["env"], cwd := root }
+private def loadWorkspace (root : FilePath) (lean : Lake.LeanInstall) : IO Lake.Workspace := do
+  let cwd ← IO.currentDir
+  try
+    IO.Process.setCurrentDir root
+    unsafe enableInitializersExecution
+    let env ← (Lake.Env.compute (.ofLean lean) lean (← Lake.findElanInstall?)).toIO IO.userError
+    let (ws?, log) ← (Lake.loadWorkspace { lakeEnv := env, wsDir := root }).captureLog
+    let some ws := ws? | throw <| IO.userError s!"Unable to load Lake workspace at {root}\n{log}"
+    return ws
+  finally
+    IO.Process.setCurrentDir cwd
+
+private def workspaceSearchPath (ws : Lake.Workspace) : IO Lean.SearchPath := do
+  let some cmd ← IO.getEnv "LAKE" | return ws.augmentedLeanPath
+  if cmd == ws.lakeEnv.lake.lake.toString then return ws.augmentedLeanPath
+  let env ← IO.Process.run {cmd, args := #["env"], cwd := ws.root.dir}
   let some paths := (env.splitOn "\n").findSome? (·.dropPrefix? "LEAN_PATH=") |
     throw <| IO.userError "Lake did not provide the package search path"
   return System.SearchPath.parse paths.trimAscii.toString
 
-private def initializeLean (packageRoot : Option FilePath) : IO Unit := do
+private def initializeLean (path : FilePath) (packageRoot : Option FilePath) : IO Name := do
   let sysroot ← findSysroot
-  let paths ← match packageRoot with
-    | some root => packageSearchPath (Lake.LakeInstall.ofLean { sysroot }) root
-    | none => pure []
-  initSearchPath sysroot paths
+  let path ← realPathNormalized path
+  let mut roots := [← IO.currentDir]
+  if let some root := packageRoot then
+    let ws ← loadWorkspace (← realPathNormalized root) { sysroot }
+    initSearchPath sysroot (← workspaceSearchPath ws)
+    if let some mod := ws.findModuleBySrc? path then return mod.name
+    roots := [ws.root.srcDir, root]
+  else
+    initSearchPath sysroot
+  if let some name ← searchModuleNameOfFileName path roots then return name
+  moduleNameOfFileName path path.parent
 
 private def run (args : List String) : IO AuditOutcome := do
   if args.length > 1 then
@@ -111,8 +135,8 @@ private def run (args : List String) : IO AuditOutcome := do
     | some root => pure root
     | none => realPathNormalized (← IO.currentDir)
   let policy ← resolvePolicy path root
-  initializeLean packageRoot
-  auditFile path policy
+  let mainModule ← initializeLean path packageRoot
+  auditFile path policy mainModule
 
 def main (args : List String) : IO UInt32 := do
   try

@@ -53,11 +53,11 @@ private def throwOnErrors (messages : MessageLog) (reason : String) : IO Unit :=
       IO.eprintln (← message.toString)
   throw (IO.userError reason)
 
-def elaborateSource (path : FilePath) (source : String) : IO ElaboratedFile := do
+def elaborateSource (path : FilePath) (source : String) (mainModule : Name) : IO ElaboratedFile := do
   let input := Parser.mkInputContext source path.toString
   let (header, parserState, headerMessages) ← Parser.parseHeader input
   unsafe enableInitializersExecution
-  let (importEnv, messages) ← Elab.processHeader header {} headerMessages input
+  let (importEnv, messages) ← Elab.processHeader header {} headerMessages input (mainModule := mainModule)
   throwOnErrors messages "Unable to load Lean imports"
   let (_, elaboration) ← (elaborateCommands.run { inputCtx := input }).run
     { commandState := Elab.Command.mkState importEnv {} {}
