@@ -38,7 +38,7 @@ private def emptyCatch? (expr : Expr) : Option Expr := do
   let mut sameContinuation := false
   if expr.isAppOf ``Bind.bind then
     let #[_, _, _, _, action, tail] := expr.getAppArgs | none
-    let next := tail.getLambdaBody
+    let next := resolveLocalValue {} tail.getLambdaBody
     guard (!fails next)
     if next.isAppOf ``EarlyReturn.runK then
       let branches := next.getAppArgs
@@ -53,11 +53,11 @@ private def emptyCatch? (expr : Expr) : Option Expr := do
 
 private def catchesFinalThrow (caught : Expr) : Bool := Id.run do
   let #[_, _, catchInstance, _, action, _] := caught.getAppArgs | return false
-  let mut tail := action.consumeMData
+  let mut tail := resolveLocalValue {} action
   unless tail.isAppOf ``Bind.bind do return false
   while tail.isAppOf ``Bind.bind do
     let some (.lam _ _ next _) := tail.getAppArgs.back?.map Expr.consumeMData | return false
-    tail := next.consumeMData
+    tail := resolveLocalValue {} next
   unless tail.isAppOf ``MonadExcept.throw || tail.isAppOf ``MonadExceptOf.throw || tail.isAppOf ``throwThe do return false
   let instanceOf := fun (inst : Expr) =>
     if inst.isAppOf ``instMonadExceptOfMonadExceptOf then inst.getAppArgs.back?.getD inst else inst
@@ -157,9 +157,8 @@ private def discardedResult? (locals : LocalContext) (kind : SyntaxNodeKind) (ex
     let .letE _ type _ body _ := expr | return none
     if !body.hasLooseBVar 0 then lostResult? type else return none
 
-def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (line : Nat) : IO (Array Finding) := do
-  let kind := term.stx.getKind
-  let expr := (instantiateMVarsCore context.mctx term.expr).1.consumeMData
+def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (kind : SyntaxNodeKind)
+    (expr : Expr) (line : Nat) : IO (Array Finding) := do
   if kind == ``Parser.Term.app && expr.isAppOf `Spec.untilSome then
     if let some callback := expr.getAppArgs[2]? then
       if ← term.runMetaM context (retriesOnAnyError callback) then

@@ -90,7 +90,7 @@ private def checkTerm (deniedModules : List Name) (context : Elab.ContextInfo)
   if kind == ``Parser.Term.app then
     if let some finding := applicationFinding? term.lctx action line then
       findings := findings.push finding
-  return findings ++ (← ResultChecks.check context term line)
+  return findings ++ (← ResultChecks.check context term kind expr line)
 
 def check (file : ElaboratedFile) (deniedModules : List Name) (pureModule : Bool) : IO (Array Finding) := do
   let mut findings := #[]

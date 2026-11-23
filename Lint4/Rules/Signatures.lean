@@ -21,6 +21,17 @@ private def constraint? (type : Expr) : MetaM (Option Expr) := do
   unless ← isProp type do return none
   return some (← simp type (← Simp.Context.mkDefault)).1.expr
 
+private partial def disjointIndices (left right : Expr) : MetaM Bool := do
+  if left == right || (← isProof left) then return false
+  if let .lit a := left then
+    if let .lit b := right then return a != b
+  let some (a, xs) ← constructorApp? (← whnf left) | return false
+  let some (b, ys) ← constructorApp? (← whnf right) | return false
+  if a.name != b.name then return true
+  for x in xs[a.numParams...*], y in ys[b.numParams...*] do
+    if ← disjointIndices x y then return true
+  return false
+
 private partial def inspectType (type : Expr) (atPath : String) (seen : NameMap Expr) : MetaM (Array String) := do
   let type := type.headBeta.consumeMData
   if let .letE _ _ value body _ := type then return ← inspectType (body.instantiate1 value) atPath seen
@@ -41,7 +52,8 @@ private partial def inspectType (type : Expr) (atPath : String) (seen : NameMap 
       issues := issues ++ (← inspectType arg s!"{atPath} in {name}" seen)
     return issues
   if let some previous := seen.find? name then
-    unless type != previous && type.occurs previous do return #[]
+    let isStrictSubterm := type != previous && type.occurs previous
+    unless isStrictSubterm do return #[]
   let seen := seen.insert name type
   let env ← getEnv
   match env.find? name with
@@ -53,7 +65,9 @@ private partial def inspectType (type : Expr) (atPath : String) (seen : NameMap 
     for ctor in ind.ctors do
       if isPrivateName ctor then continue
       let ctorType ← inferType (mkAppN (mkConst ctor levels) (args.extract 0 ind.numParams))
-      let fields ← forallTelescope ctorType fun fields _ => do
+      let fields ← forallTelescope ctorType fun fields result => do
+        for index in args[ind.numParams...*], ctorIndex in result.getAppArgs[ind.numParams...*] do
+          if ← disjointIndices index ctorIndex then return #[]
         let mut issues := #[]
         let types ← fields.mapM inferType
         let constraints ← types.filterMapM constraint?

@@ -34,7 +34,9 @@ A blocking finding records a violation of the audit policy. For example, N02 est
 
 N06 follows transparent aliases and checks container arguments and callback signatures recursively. Raw `String`, `Int`, `Nat`, `Lean.Json` and polymorphic types such as `{α : Type}` produce a finding. For example, `abbrev Round := Int` exposes `Int` to a scenario taking a `Round`. A sum constructor `Value.number (n : Nat)` also admits an unrestricted value. The rule uses constructor declarations for every domain type.
 
-A closed enumeration, an identifier with a private constructor and a record of protected fields can cross the boundary. A public constructor can constrain a field by requiring a proof about it. Lint4 simplifies the proof obligation before checking which fields it depends on, so `value = value` provides no protection. This is a structural check. The strength of an arbitrary domain predicate still requires review.
+A closed enumeration, an identifier with a private constructor and a record of protected fields can cross the boundary. For indexed types, N06 skips constructors whose result index has a conflicting constructor or literal. An unknown index keeps all potentially reachable constructors in scope.
+
+A public constructor can constrain a field by requiring a proof about it. Lint4 simplifies the proof obligation before checking which fields it depends on, so `value = value` provides no protection. This is a structural check. The strength of an arbitrary domain predicate still requires review.
 
 An entry point may return `IO Unit`. Signatures such as `Option AgentId → Array Message → Except RequestError Message` pass when the component types pass. Local JSON construction and parsing inside a function do not participate in N06. The rule supersedes W01, W05, W06 and W07.
 
