@@ -14,6 +14,8 @@ An individual Lean file is also a valid target. Exit **0** means the audit compl
 
 Run Lint4's five end-to-end checks from this checkout with `lake env lean --run tests/Run.lean`. The runner builds the auditor and creates its fixture package in a temporary directory.
 
+All rules print `path:line: [severity] finding [rule code]`. A finding about an entire file omits the line number. A directory scan that finds Lean sources ends with its verdict and counts of Lean files, files with blocking findings, and analysis errors.
+
 ## Blocking rules
 
 | Rule | Evidence required by Lint4 |

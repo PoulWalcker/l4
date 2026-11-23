@@ -25,8 +25,9 @@ private def AuditOutcome.exitCode : AuditOutcome → UInt32
   | .violations => 1
   | .failed => 2
 
-private def printFinding (path : FilePath) (finding : Finding) : IO Unit :=
-  IO.println s!"{path}:{finding.line}: {finding.rule.severity} {finding.rule.code} {finding.detail}"
+private def printFinding (path : FilePath) (finding : Finding) : IO Unit := do
+  let location := if finding.line == 0 then path.toString else s!"{path}:{finding.line}"
+  IO.println s!"{location}: [{finding.rule.severity}] {finding.detail} [{finding.rule.code}]"
 
 private def auditFile (path : FilePath) (policy : AuditPolicy) (mainModule : Name) : IO AuditOutcome := do
   let source ← IO.FS.readFile path
@@ -69,8 +70,10 @@ private def scan (target : FilePath) : IO AuditOutcome := do
     | .passed => pure ()
     | .violations => blockers := blockers + 1
     | .failed => failures := failures + 1
-  IO.println s!"Audited {sources.size} Lean files; {blockers} files with No-Go; {failures} analysis errors"
-  return if failures > 0 then .failed else if blockers > 0 then .violations else .passed
+  let (outcome, verdict) := if failures > 0 then (AuditOutcome.failed, "incomplete")
+    else if blockers > 0 then (.violations, "blocked") else (.passed, "passed")
+  IO.println s!"Audit {verdict} | Lean files: {sources.size} | Files with No-Go: {blockers} | Analysis errors: {failures}"
+  return outcome
 
 private def resolvePolicy (path root : FilePath) : IO AuditPolicy := do
   let parent ← realPathNormalized (path.parent.getD root)
