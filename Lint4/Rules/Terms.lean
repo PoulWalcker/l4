@@ -38,7 +38,8 @@ private partial def timerName? (env : Environment) (name : Name) (seen : NameSet
   if [``IO.sleep, `Std.Async.sleep, `Std.Async.Selector.sleep].contains name then return name
   guard (!seen.contains name)
   let .defnInfo info ← env.find? name | none
-  let target ← info.value.getLambdaBody.getAppFn'.constName?
+  let body := underlyingAction {} info.value.getLambdaBody
+  let target ← body.getAppFn'.constName?
   timerName? env target (seen.insert name)
 
 private def usesErrorFallback (locals : LocalContext) (action : Expr) : Bool := Id.run do

@@ -36,7 +36,6 @@ private def guardBranches? (expr : Expr) : Option (Expr × Bool) := do
   else if fails yes && returnsUnit no then some (condition, false)
   else none
 
-/-- Inspect one assertion helper, including imported helpers such as Spec.requireThat. -/
 private def checkedGuard? (env : Environment) (expr : Expr) : Option (Expr × Bool) := do
   if let some gate := guardBranches? expr then return gate
   let .const name levels := expr.getAppFn | none
@@ -63,17 +62,27 @@ private partial def knownTruth (locals : LocalContext) (expr : Expr) : MetaM (Op
     return none
   | _, _ => return none
 
+private partial def usesProcessPipe (locals : LocalContext) (expr : Expr) : MetaM Bool := do
+  let expr := resolveLocalValue locals expr
+  let env ← getEnv
+  let structure? := match expr with
+    | .proj name _ _ => some name
+    | _ => expr.getAppFn'.constName?.bind env.getProjectionStructureName?
+  if structure? == some ``IO.Process.Child then
+    return (← Meta.whnf (← Meta.inferType expr)).isConstOf ``IO.FS.Handle
+  expr.getAppArgs.anyM (usesProcessPipe locals)
+
 private def lostResult? (type : Expr) : MetaM (Option String) := do
   let type ← Meta.whnf type
   if type.isAppOf ``Except then return some "Discarded Except result"
   if type.isConstOf ``IO.Process.Output then return some "Discarded process output and exit status"
   return none
 
-/-- Only the standard process runner establishes that a nonzero exit status can be returned. -/
-private def onlyProcessText (action continuation : Expr) : MetaM Bool := do
+private def ignoresProcessStatus (action continuation : Expr) : MetaM Bool := do
   unless action.isAppOf ``IO.Process.output do return false
   Meta.lambdaTelescope continuation fun args body => do
     let some output := args[0]? | return false
+    let body ← Meta.zetaReduce body (zetaDelta := false)
     let fields := getStructureFields (← getEnv) ``IO.Process.Output
     let withoutText := body.replace fun part =>
       let isText := match part with
@@ -82,17 +91,28 @@ private def onlyProcessText (action continuation : Expr) : MetaM Bool := do
         | _ => part.getAppArgs.back? == some output &&
           (part.isAppOf ``IO.Process.Output.stdout || part.isAppOf ``IO.Process.Output.stderr)
       if isText then some (mkStrLit "") else none
-    return body.containsFVar output.fvarId! && !withoutText.containsFVar output.fvarId!
+    return !withoutText.containsFVar output.fvarId!
 
-private def discardedResult? (kind : SyntaxNodeKind) (expr : Expr) : MetaM (Option String) := do
+private def discardedAction? (locals : LocalContext) (monad type action : Expr) : MetaM (Option String) := do
+  if let some detail ← lostResult? type then return some detail
+  unless monad.isConstOf ``IO || monad.isAppOf ``EIO do return none
+  let action := resolveLocalValue locals action
+  if action.isAppOf ``IO.Process.spawn || action.isAppOf ``IO.FS.readFile || action.isAppOf ``IO.FS.readBinFile then
+    return some "Discarded file read or spawned process"
+  let type ← Meta.whnf type
+  unless type.isConstOf ``Unit || type.isConstOf ``PUnit do
+    if ← usesProcessPipe locals action then return some "Discarded process pipe result"
+  return none
+
+private def discardedResult? (locals : LocalContext) (kind : SyntaxNodeKind) (expr : Expr) : MetaM (Option String) := do
   match expr.getAppFn.constName?, expr.getAppArgs with
-  | some ``Functor.discard, #[_, type, _, _] =>
-    if kind == ``Parser.Term.app then lostResult? type else return none
-  | some ``Bind.bind, #[_, _, type, _, action, continuation@(.lam _ _ body _)] =>
+  | some ``Functor.discard, #[monad, type, _, action] =>
+    if kind == ``Parser.Term.app then discardedAction? locals monad type action else return none
+  | some ``Bind.bind, #[monad, _, type, _, action, continuation@(.lam _ _ body _)] =>
     unless kind == ``Parser.Term.doLetArrow do return none
-    if !body.hasLooseBVar 0 then return ← lostResult? type
-    if ← onlyProcessText action continuation then
-      return some "Process output text used without observing the exit status"
+    if !body.hasLooseBVar 0 then return ← discardedAction? locals monad type action
+    if ← ignoresProcessStatus action continuation then
+      return some "Process exit status is unobserved"
     return none
   | _, _ =>
     unless [``Parser.Term.let, ``Parser.Term.doLet].contains kind do return none
@@ -105,7 +125,7 @@ def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (line : Nat) : IO 
   if kind == ``Parser.Term.doTry && emptyHandler expr then
     let catchLine := (term.stx[2][0].getPos?.map context.fileMap.toPosition).map (·.line)
     return #[⟨catchLine.getD line, .warning, "W04", "Exception handler immediately returns success"⟩]
-  if let some detail ← term.runMetaM context (discardedResult? kind expr) then
+  if let some detail ← term.runMetaM context (discardedResult? term.lctx kind expr) then
     return #[⟨line, .warning, "W16", detail⟩]
   unless kind == ``Parser.Term.app do return #[]
   let some (condition, success) := checkedGuard? context.env expr | return #[]

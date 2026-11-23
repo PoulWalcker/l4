@@ -1,5 +1,6 @@
 import Lint4.Rules.Declarations
 import Lint4.Rules.Terms
+import Lint4.Rules.Waits
 import Lint4.Rules.Source
 import Lint4.Rules.Signatures
 
@@ -27,7 +28,7 @@ def auditSource (path : FilePath) (source : String) (policy : AuditPolicy) : IO 
   let declarations ← DeclarationChecks.check file policy.pureModule
   let terms ← TermChecks.check file policy.deniedModules policy.pureModule
   let signatures ← if policy.specModule then SignatureChecks.check file else pure #[]
-  let findings := signatures ++ SourceChecks.check file ++ checkImports file policy.deniedModules ++ declarations ++ terms
+  let findings := WaitChecks.check file ++ signatures ++ SourceChecks.check file ++ checkImports file policy.deniedModules ++ declarations ++ terms
   let order := fun (a b : Finding) =>
     (compare a.line b.line |>.then (compare a.rule b.rule) |>.then (compare a.detail b.detail)).isLT
   return (findings.qsort order).toList.eraseReps.toArray
