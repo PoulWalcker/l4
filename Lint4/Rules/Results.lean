@@ -127,8 +127,9 @@ def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (line : Nat) : IO 
     return #[⟨catchLine.getD line, .warning, "W04", "Exception handler immediately returns success"⟩]
   if let some detail ← term.runMetaM context (discardedResult? term.lctx kind expr) then
     if let .letE _ _ value _ _ := expr then
-      if value.consumeMData.isAppOfArity `Spec.requireThat 2 then
-        return #[⟨line, .noGo, "N07", "Discarded Spec.requireThat verdict"⟩]
+      let assertions := [`Spec.requireThat, `Spec.fieldsMatch]
+      if let some name := assertions.find? (fun name => value.consumeMData.isAppOfArity name 2) then
+        return #[⟨line, .noGo, "N07", s!"Discarded {name} verdict"⟩]
     return #[⟨line, .warning, "W16", detail⟩]
   unless kind == ``Parser.Term.app do return #[]
   let some (condition, success) := checkedGuard? context.env expr | return #[]
