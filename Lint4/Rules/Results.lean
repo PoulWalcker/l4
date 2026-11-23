@@ -12,6 +12,27 @@ private def returnsUnit (expr : Expr) : Bool :=
 private def fails (expr : Expr) : Bool :=
   expr.isAppOf ``MonadExcept.throw || expr.isAppOf ``MonadExceptOf.throw || expr.isAppOf ``Except.error
 
+private partial def retriesOnAnyError (action : Expr) : MetaM Bool := do
+  let action := action.consumeMData
+  if let .letE _ _ value body _ := action then
+    return ← retriesOnAnyError (body.instantiate1 value)
+  if action.isAppOf ``Bind.bind then
+    let some tail := action.getAppArgs.back? | return false
+    return ← Meta.lambdaTelescope tail fun _ body => retriesOnAnyError body
+  if action.isAppOf ``ite then
+    let #[_, _, _, yes, no] := action.getAppArgs | return false
+    return (← retriesOnAnyError yes) || (← retriesOnAnyError no)
+  let some matcher ← Meta.matchMatcherApp? action | return false
+  let #[discr] := matcher.discrs | return false
+  if discr.consumeMData.isAppOf ``Except.ok then return false
+  let type ← Meta.whnf (← Meta.inferType discr)
+  unless type.isAppOfArity ``Except 2 do return false
+  let #[errorType, valueType] := type.getAppArgs | return false
+  Meta.withLocalDeclD `reason errorType fun reason => do
+    let error ← Meta.mkAppOptM ``Except.error #[some errorType, some valueType, some reason]
+    let .reduced branch ← Meta.reduceMatcher? { matcher with discrs := #[error] }.toExpr | return false
+    return branch.isAppOf ``Pure.pure && branch.getAppArgs.back?.any (·.isAppOf ``Option.none)
+
 private def emptyHandler (expr : Expr) : Bool := Id.run do
   let mut expr := expr
   let mut sameContinuation := false
@@ -122,6 +143,10 @@ private def discardedResult? (locals : LocalContext) (kind : SyntaxNodeKind) (ex
 def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (line : Nat) : IO (Array Finding) := do
   let kind := term.stx.getKind
   let expr := (instantiateMVarsCore context.mctx term.expr).1.consumeMData
+  if kind == ``Parser.Term.app && expr.isAppOf `Spec.untilSome then
+    if let some callback := expr.getAppArgs[2]? then
+      if ← term.runMetaM context (retriesOnAnyError callback) then
+        return #[⟨line, .warning, "W20", "Polling callback retries on any Except error"⟩]
   if kind == ``Parser.Term.doTry && emptyHandler expr then
     let catchLine := (term.stx[2][0].getPos?.map context.fileMap.toPosition).map (·.line)
     return #[⟨catchLine.getD line, .warning, "W04", "Exception handler immediately returns success"⟩]
