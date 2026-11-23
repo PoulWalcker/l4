@@ -33,22 +33,37 @@ private partial def retriesOnAnyError (action : Expr) : MetaM Bool := do
     let .reduced branch ← Meta.reduceMatcher? { matcher with discrs := #[error] }.toExpr | return false
     return branch.isAppOf ``Pure.pure && branch.getAppArgs.back?.any (·.isAppOf ``Option.none)
 
-private def emptyHandler (expr : Expr) : Bool := Id.run do
+private def emptyCatch? (expr : Expr) : Option Expr := do
   let mut expr := expr
   let mut sameContinuation := false
   if expr.isAppOf ``Bind.bind then
-    let #[_, _, _, _, action, tail] := expr.getAppArgs | return false
+    let #[_, _, _, _, action, tail] := expr.getAppArgs | none
     let next := tail.getLambdaBody
-    if fails next then return false
+    guard (!fails next)
     if next.isAppOf ``EarlyReturn.runK then
       let branches := next.getAppArgs
       sameContinuation := branches.back? == branches.pop.back?
     expr := action
-  unless expr.isAppOf ``MonadExcept.tryCatch || expr.isAppOf ``MonadExceptOf.tryCatch do return false
-  let some (.lam _ _ body _) := expr.getAppArgs.back? | return false
+  guard (expr.isAppOf ``MonadExcept.tryCatch || expr.isAppOf ``MonadExceptOf.tryCatch)
+  let .lam _ _ body _ ← expr.getAppArgs.back? | none
   let body := body.consumeMData
-  return returnsUnit body || (sameContinuation && body.isAppOf ``EarlyReturnT.return &&
-    body.getAppArgs.back?.any (·.isConstOf ``Unit.unit))
+  guard (returnsUnit body || (sameContinuation && body.isAppOf ``EarlyReturnT.return &&
+    body.getAppArgs.back?.any (·.isConstOf ``Unit.unit)))
+  return expr
+
+private def catchesFinalThrow (caught : Expr) : Bool := Id.run do
+  let #[_, _, catchInstance, _, action, _] := caught.getAppArgs | return false
+  let mut tail := action.consumeMData
+  unless tail.isAppOf ``Bind.bind do return false
+  while tail.isAppOf ``Bind.bind do
+    let some (.lam _ _ next _) := tail.getAppArgs.back?.map Expr.consumeMData | return false
+    tail := next.consumeMData
+  unless tail.isAppOf ``MonadExcept.throw || tail.isAppOf ``MonadExceptOf.throw || tail.isAppOf ``throwThe do return false
+  let instanceOf := fun (inst : Expr) =>
+    if inst.isAppOf ``instMonadExceptOfMonadExceptOf then inst.getAppArgs.back?.getD inst else inst
+  let channel := instanceOf catchInstance
+  return (channel.isAppOf ``instMonadExceptOfEIO || channel.isAppOf ``instMonadExceptOfExcept) &&
+    tail.getAppArgs[2]?.any (fun inst => instanceOf inst == channel)
 
 private def guardBranches? (expr : Expr) : Option (Expr × Bool) := do
   guard (expr.isAppOf ``ite)
@@ -94,6 +109,8 @@ private partial def usesProcessPipe (locals : LocalContext) (expr : Expr) : Meta
   expr.getAppArgs.anyM (usesProcessPipe locals)
 
 private def lostResult? (type : Expr) : MetaM (Option String) := do
+  if (← Meta.whnfUntil type ``EIO).isSome || (← Meta.whnfUntil type ``BaseIO).isSome then
+    return some "Discarded IO action without executing it"
   let type ← Meta.whnf type
   if type.isAppOf ``Except then return some "Discarded Except result"
   if type.isConstOf ``IO.Process.Output then return some "Discarded process output and exit status"
@@ -147,9 +164,12 @@ def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (line : Nat) : IO 
     if let some callback := expr.getAppArgs[2]? then
       if ← term.runMetaM context (retriesOnAnyError callback) then
         return #[⟨line, .warning, "W20", "Polling callback retries on any Except error"⟩]
-  if kind == ``Parser.Term.doTry && emptyHandler expr then
-    let catchLine := (term.stx[2][0].getPos?.map context.fileMap.toPosition).map (·.line)
-    return #[⟨catchLine.getD line, .warning, "W04", "Exception handler immediately returns success"⟩]
+  if kind == ``Parser.Term.doTry then
+    if let some caught := emptyCatch? expr then
+      let catchLine := ((term.stx[2][0].getPos?.map context.fileMap.toPosition).map (·.line)).getD line
+      if catchesFinalThrow caught then
+        return #[⟨catchLine, .noGo, "N09", "Catch suppresses the final throw in its own try block"⟩]
+      return #[⟨catchLine, .warning, "W04", "Exception handler immediately returns success"⟩]
   if let some detail ← term.runMetaM context (discardedResult? term.lctx kind expr) then
     if let .letE _ _ value _ _ := expr then
       let assertions := [`Spec.requireThat, `Spec.fieldsMatch]

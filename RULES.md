@@ -24,8 +24,9 @@ An individual Lean file is also a valid target. Exit **0** means the audit compl
 | N06 · Unprotected domain signature | Under `spec/`, inspect parameters and results of written definitions, opaque functions and function-type abbreviations. Report the declaration and the offending parameter, result or constructor field. |
 | N07 · Discarded assertion verdict | An unused Lean `let` binding holds the result of a direct call to `Spec.requireThat` or `Spec.fieldsMatch`. An assertion error in that value never reaches the caller. |
 | N08 · Assertion always succeeds | A direct call to `Spec.requireThat` has a guard that the constant-outcome check proves always takes the success branch. |
+| N09 · A test catches its own failure | A `try` runs an action and unconditionally throws on normal completion. Its handler catches that same error channel and immediately succeeds. Both outcomes of the action pass this check. |
 | I01 · Effect in a pure module | A declaration in package-root `pure/` references `IO`, `EIO` or `BaseIO` in its type, body, or the type of a directly used constant. Type abbreviations are followed. A pure function can construct an `IO.Error`. |
-| I02 · Forbidden dependency | A file in `pure/` imports `io` or `jobs` (including submodules), or uses a constant or projection from those modules. Import diagnostics point to the import line. |
+| I02 · Forbidden dependency | A file in `pure/` imports `io` or `jobs` (including submodules), reaches them through intermediate modules built under the Lake package root, or uses a constant or projection from those modules. The diagnostic shows one dependency chain per offending import. |
 
 A blocking finding records a violation of the audit policy. For example, N02 establishes that a timer is referenced. Measuring whether the scenario is flaky requires running it.
 
@@ -48,7 +49,7 @@ An entry point may return `IO Unit`. Signatures such as `Option AgentId → Arra
 | W11 · Axiom dependency | A declaration relies on an axiom beyond `propext`, `Classical.choice` and `Quot.sound`. N05 covers `sorryAx`. |
 | W12 · Debug trace | A debug-trace construct or an explicit `dbgTrace` call remains in the test. |
 | W13 · Formatted error search | A substring of a formatted `IO.Error` controls behavior. Review whether the error has a stable structured discriminator. |
-| W16 · Lost result | The code discards an `Except` or `IO.Process.Output`, leaves a binding of that type unused, or uses only stdout/stderr from a directly bound `IO.Process.output`. An unused local binding of `output.exitCode` still leaves the status unchecked. W16 also reports discarded file reads, process spawns and non-unit results of child pipe operations. |
+| W16 · Lost result or unexecuted action | An unused `let` can discard an `IO`, `EIO` or `BaseIO` action before it runs. Binding with `←` executes the action. W16 also reports discarded `Except` and `IO.Process.Output` values, file reads, process spawns, non-unit results of child pipe operations and uses of only stdout/stderr from a directly bound `IO.Process.output`. An unused binding of `output.exitCode` still leaves the status unchecked. |
 | W17 / W19 · Constant assertion outcome | A recognized unit-success/error guard always selects success (W17) or failure (W19). Includes literal conditions, reflexive equality and inequality, negation and one level of a simple assertion helper such as `requireThat`. Boolean equality needs a `LawfulBEq` instance. |
 | W20 · Polling retries on any error | At a direct `Spec.untilSome` call, a match or pattern-let in the callback returns `pure none` for an arbitrary `Except.error`. Check which errors justify another attempt. The finding points to the polling call. |
 | B03 · Audit coverage | Directory scans warn once for each file under `spec/` whose extension differs from `.lean`, including configuration files and files without an extension. |

@@ -76,7 +76,7 @@ private def resolvePolicy (path root : FilePath) : IO AuditPolicy := do
   unless ← pureDir.isDir do return policy
   let prefixPath := (← realPathNormalized pureDir).components
   if prefixPath.isPrefixOf parent.components || prefixPath.isPrefixOf target.components then
-    return { policy with pureModule := true, deniedModules := [`io, `jobs] }
+    return { policy with projectRoot := ← realPathNormalized root, pureModule := true, deniedModules := [`io, `jobs] }
   return policy
 
 private def packageSearchPath (lake : Lake.LakeInstall) (root : FilePath) : IO Lean.SearchPath := do
