@@ -23,4 +23,19 @@ partial def underlyingAction (locals : LocalContext) (expr : Expr) : Expr :=
     | none => expr
   | _ => expr
 
+partial def standardMonad (inst : Expr) : Bool :=
+  if inst.isAppOfArity ``ExceptT.instMonad 3 then standardMonad inst.appArg!
+  else inst.isAppOf ``Except.instMonad || inst.isAppOf ``instMonadEIO || inst.isConstOf ``Id.instMonad
+
+def standardPureResult? (expr : Expr) : Option Expr := do
+  if expr.isAppOfArity ``Except.ok 3 then return expr.appArg!
+  guard (expr.isAppOfArity ``Pure.pure 4)
+  let inst := expr.getAppArgs[1]!
+  guard (inst.isAppOf ``Applicative.toPure && inst.appArg!.isAppOf ``Monad.toApplicative)
+  guard (standardMonad inst.appArg!.appArg!)
+  return expr.appArg!
+
+def isFailure (expr : Expr) : Bool :=
+  expr.isAppOf ``MonadExcept.throw || expr.isAppOf ``MonadExceptOf.throw || expr.isAppOf ``Except.error
+
 end Lint4

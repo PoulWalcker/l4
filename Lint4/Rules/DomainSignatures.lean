@@ -1,7 +1,7 @@
-import Lint4.Frontend
+import Lint4.ReadLeanModule
 import Lint4.Finding
 
-namespace Lint4.SignatureChecks
+namespace Lint4.DomainSignatures
 
 open Lean Meta
 
@@ -21,16 +21,20 @@ private def constraint? (type : Expr) : MetaM (Option Expr) := do
   unless ← isProp type do return none
   return some (← simp type (← Simp.Context.mkDefault)).1.expr
 
-private partial def disjointIndices (left right : Expr) : MetaM Bool := do
-  if left == right || (← isProof left) then return false
-  if let .lit a := left then
-    if let .lit b := right then return a != b
-  let some (a, xs) ← constructorApp? (← whnf left) | return false
-  let some (b, ys) ← constructorApp? (← whnf right) | return false
-  if a.name != b.name then return true
+private partial def matchIndex (fields : Array Expr) (index pattern : Expr) : StateT FVarSubst MetaM Bool := do
+  let pattern := (← get).apply pattern
+  if index == pattern || (← isProof index) then return true
+  if fields.contains pattern then
+    modify (·.insert pattern.fvarId! index)
+    return true
+  if let .lit a := index then
+    if let .lit b := pattern then return a == b
+  let some (a, xs) ← constructorApp? (← whnf index) | return true
+  let some (b, ys) ← constructorApp? (← whnf pattern) | return true
+  if a.name != b.name then return false
   for x in xs[a.numParams...*], y in ys[b.numParams...*] do
-    if ← disjointIndices x y then return true
-  return false
+    unless ← matchIndex fields x y do return false
+  return true
 
 private structure FamilyPath where
   instances : ExprSet := {}
@@ -49,8 +53,9 @@ private def FamilyPath.visit (path : FamilyPath) (type : Expr) (name : Name) : M
   return some ⟨path.instances.insert key, path.shapes.insert shape, some key⟩
 
 private partial def inspectType (type : Expr) (atPath : String) (seen : NameMap FamilyPath) : MetaM (Array String) := do
-  let type := type.headBeta.consumeMData
-  if let .letE _ _ value body _ := type then return ← inspectType (body.instantiate1 value) atPath seen
+  let env ← getEnv
+  let type ← whnfHeadPred type fun e => pure <|
+    e.isAppOf ``ite || e.isAppOf ``dite || e.getAppFn.constName?.any (isMatcherCore env)
   if type.isProp || (← isProp type) then return #[]
   if type.isSort || type.isFVar then return #[s!"{atPath} uses polymorphic type {← ppExpr type}"]
   if type.isForall then
@@ -74,7 +79,6 @@ private partial def inspectType (type : Expr) (atPath : String) (seen : NameMap 
     return issues
   let some path ← ((seen.find? name).getD {}).visit type name | return #[]
   let seen := seen.insert name path
-  let env ← getEnv
   match env.find? name with
   | some (.defnInfo _) =>
     let some body ← unfoldDefinition? type | return #[]
@@ -85,12 +89,9 @@ private partial def inspectType (type : Expr) (atPath : String) (seen : NameMap 
       if isPrivateName ctor then continue
       let ctorType ← inferType (mkAppN (mkConst ctor levels) (args.extract 0 ind.numParams))
       let fields ← forallTelescope ctorType fun fields result => do
-        let mut fixed : FVarSubst := {}
-        for index in args[ind.numParams...*], ctorIndex in result.getAppArgs[ind.numParams...*] do
-          let ctorIndex := fixed.apply ctorIndex
-          if ← disjointIndices index ctorIndex then return #[]
-          if fields.contains ctorIndex then
-            fixed := fixed.insert ctorIndex.fvarId! index
+        let indices := (args.zip result.getAppArgs).extract ind.numParams
+        let (reachable, fixed) ← (indices.allM fun (i, p) => matchIndex fields i p).run {}
+        unless reachable do return #[]
         let mut issues := #[]
         let types ← fields.mapM fun field => return fixed.apply (← inferType field)
         let constraints ← types.filterMapM constraint?
@@ -103,30 +104,23 @@ private partial def inspectType (type : Expr) (atPath : String) (seen : NameMap 
     return issues
   | _ => return #[]
 
-def check (file : ElaboratedFile) : IO (Array Finding) := do
-  let positions := Std.HashSet.ofArray ((file.commands.flatMap signaturePositions).map (·.byteIdx))
-  let action : MetaM (Array Finding) := do
-    let mut findings := #[]
-    for (name, info) in (← getEnv).constants.map₂ do
-      let some ranges ← findDeclarationRangesCore? name | continue
-      let pos := ranges.selectionRange.pos
-      unless positions.contains (file.input.fileMap.ofPosition pos).byteIdx do continue
-      let signature ← match info with
-        | .defnInfo d =>
-          if d.type.getForallBody.isSort && !d.type.getForallBody.isProp then
-            unless d.hints.isAbbrev && d.value.getLambdaBody.isForall do continue
-            lambdaTelescope d.value fun params body => mkForallFVars params body
-          else pure d.type
-        | .opaqueInfo d =>
-          if d.type.getForallBody.isSort && !d.type.getForallBody.isProp then continue
-          pure d.type
-        | _ => continue
-      let label := (privateToUserName name).toString
-      let path := if signature.isForall then label else s!"{label} result"
-      let issues ← inspectType signature path {}
-      findings := findings ++ issues.map fun detail => ⟨pos.line, .unprotectedSignature, s!"Unprotected domain type: {detail}"⟩
-    return findings
-  let (findings, _) ← action.toIO { fileName := file.input.fileName, fileMap := file.input.fileMap } { env := file.env }
-  return findings
+def declarationOffsets (commands : Array Syntax) : Std.HashSet Nat :=
+  .ofArray ((commands.flatMap signaturePositions).map (·.byteIdx))
 
-end Lint4.SignatureChecks
+def check (info : ConstantInfo) (line : Nat) : MetaM (Array Finding) := do
+  let signature ← match info with
+    | .defnInfo d =>
+      if d.type.getForallBody.isSort && !d.type.getForallBody.isProp then
+        unless d.hints.isAbbrev && d.value.getLambdaBody.isForall do return #[]
+        lambdaTelescope d.value fun params body => mkForallFVars params body
+      else pure d.type
+    | .opaqueInfo d =>
+      if d.type.getForallBody.isSort && !d.type.getForallBody.isProp then return #[]
+      pure d.type
+    | _ => return #[]
+  let label := (privateToUserName info.name).toString
+  let path := if signature.isForall then label else s!"{label} result"
+  let issues ← inspectType signature path {}
+  return issues.map fun detail => ⟨line, .unprotectedSignature, detail⟩
+
+end Lint4.DomainSignatures

@@ -1,19 +1,9 @@
-import Lint4.Rules.Declarations
-import Lint4.Rules.Results
-import Lint4.Policy
+import Lint4.Finding
+import Lint4.LeanExpressions
 
-namespace Lint4.TermChecks
+namespace Lint4.Calls
 
 open Lean
-
-private def forbiddenReference (env : Environment) (expr : Expr) : Option String := do
-  let name ← match expr with
-    | .proj structureName _ _ => some structureName
-    | _ => expr.getAppFn'.constName?
-  let index ← env.getModuleIdxFor? name
-  let origin ← env.header.moduleNames[index]?
-  guard (forbiddenInPure origin)
-  return s!"Forbidden module dependency: {name} from {origin}"
 
 private def partialOperations : List Name := [
   ``GetElem?.getElem!, ``panic, ``panicWithPos, ``panicWithPosWithDecl,
@@ -65,9 +55,11 @@ private def applicationFinding? (locals : LocalContext) (action : Expr) (line : 
     return ⟨line, .formattedErrorSearch, "Substring search over a formatted IO error"⟩
   none
 
-private def checkTerm (pureModule : Bool) (context : Elab.ContextInfo)
-    (term : Elab.TermInfo) (line : Nat) : IO (Array Finding) := do
-  let expr := (instantiateMVarsCore context.mctx term.expr).1.consumeMData
+def debugTrace? (stx : Syntax) (line : Nat) : Option Finding := do
+  guard ([``Parser.Term.dbgTrace, ``Parser.Term.doDbgTrace, ``Parser.Tactic.dbgTrace].contains stx.getKind)
+  return ⟨line, .debugTrace, "Debug trace"⟩
+
+def check (context : Elab.ContextInfo) (term : Elab.TermInfo) (expr : Expr) (line : Nat) : Array Finding := Id.run do
   let action := mkAppN (resolveLocalValue term.lctx expr.getAppFn') expr.getAppArgs
   let kind := term.stx.getKind
   let partialFinding := fun (name : Name) => Id.run do
@@ -86,40 +78,13 @@ private def checkTerm (pureModule : Bool) (context : Elab.ContextInfo)
         findings := findings.push ⟨line, .manualTimer, s!"Manual timer: {timer}"⟩
       if partialOperations.contains name then
         findings := findings.push (partialFinding name)
-      if (context.env.find? name).any (·.isUnsafe) then
-        findings := findings.push ⟨line, .unsafeCode, "Unsafe operation"⟩
   if kind == ``Parser.Term.panic then
     findings := findings.push (partialFinding (expr.getAppFn'.constName?.getD ``panic))
   if kind == `«term__[_]_!» then
     findings := findings.push (partialFinding ``GetElem?.getElem!)
-  if expr.isSorry || expr.isConstOf ``sorryAx then
-    findings := findings.push ⟨line, .unfinishedProof, "Depends on sorryAx"⟩
-  if kind == ``Parser.Term.unsafe then
-    findings := findings.push ⟨line, .unsafeCode, "Unsafe operation"⟩
-  if pureModule then
-    if let some detail := forbiddenReference context.env expr then
-      findings := findings.push ⟨line, .forbiddenDependency, detail⟩
   if kind == ``Parser.Term.app then
     if let some finding := applicationFinding? term.lctx action line then
       findings := findings.push finding
-  if let some finding ← term.runMetaM context (ResultChecks.check term.stx expr context.fileMap line) then
-    findings := findings.push finding
   return findings
 
-def check (file : ElaboratedFile) (pureModule : Bool) : IO (Array Finding) := do
-  let mut findings := #[]
-  for tree in file.infoTrees do
-    findings ← tree.foldInfoM (init := findings) fun context info acc => do
-      let some pos := info.stx.getPos? | return acc
-      let line := (file.input.fileMap.toPosition pos).line
-      if [``Parser.Term.dbgTrace, ``Parser.Term.doDbgTrace, ``Parser.Tactic.dbgTrace].contains info.stx.getKind then
-        return acc.push ⟨line, .debugTrace, "Debug trace"⟩
-      let .ofTermInfo term := info | return acc
-      if term.stx.isToken "example" then
-        if let some decl := term.expr.constName?.bind context.env.find? then
-          return acc ++ (← context.runCoreM (DeclarationChecks.checkOne decl line pureModule))
-      if term.isBinder then return acc
-      return acc ++ (← checkTerm pureModule context term line)
-  return findings
-
-end Lint4.TermChecks
+end Lint4.Calls

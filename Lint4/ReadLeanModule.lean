@@ -1,4 +1,6 @@
 import Lean
+import Lake.DSL
+import Lake.Load.Workspace
 
 namespace Lint4
 
@@ -71,5 +73,49 @@ def elaborateSource (path : FilePath) (source : String) (mainModule : Name) : IO
     commands := elaboration.commands
     env := state.env
     infoTrees := state.infoState.substituteLazy.get.trees }
+
+def projectRoot? (target : FilePath) : IO (Option FilePath) := do
+  let mut dir := if ← target.isDir then some target else target.parent
+  while let some path := dir do
+    if ← ["lakefile.lean", "lakefile.toml"].anyM (fun (name : String) => do
+      let marker := path / name
+      return (← marker.pathExists) && !(← marker.isDir)) then
+      return some path
+    dir := path.parent
+  return none
+
+private def loadWorkspace (root : FilePath) (lean : Lake.LeanInstall) : IO Lake.Workspace := do
+  let cwd ← IO.currentDir
+  try
+    IO.Process.setCurrentDir root
+    unsafe enableInitializersExecution
+    let env ← (Lake.Env.compute (.ofLean lean) lean (← Lake.findElanInstall?)).toIO IO.userError
+    let (ws?, log) ← (Lake.loadWorkspace { lakeEnv := env, wsDir := root }).captureLog
+    let some ws := ws? | throw <| IO.userError s!"Unable to load Lake workspace at {root}\n{log}"
+    return ws
+  finally
+    IO.Process.setCurrentDir cwd
+
+private def workspaceSearchPath (ws : Lake.Workspace) : IO Lean.SearchPath := do
+  let some cmd ← IO.getEnv "LAKE" | return ws.augmentedLeanPath
+  if cmd == ws.lakeEnv.lake.lake.toString then return ws.augmentedLeanPath
+  let env ← IO.Process.run {cmd, args := #["env"], cwd := ws.root.dir}
+  let some paths := (env.splitOn "\n").findSome? (·.dropPrefix? "LEAN_PATH=") |
+    throw <| IO.userError "Lake did not provide the package search path"
+  return System.SearchPath.parse paths.trimAscii.toString
+
+def initializeLean (path : FilePath) (packageRoot : Option FilePath) : IO Name := do
+  let sysroot ← findSysroot
+  let path ← realPathNormalized path
+  let mut roots := [← IO.currentDir]
+  if let some root := packageRoot then
+    let ws ← loadWorkspace (← realPathNormalized root) { sysroot }
+    initSearchPath sysroot (← workspaceSearchPath ws)
+    if let some mod := ws.findModuleBySrc? path then return mod.name
+    roots := [ws.root.srcDir, root]
+  else
+    initSearchPath sysroot
+  if let some name ← searchModuleNameOfFileName path roots then return name
+  moduleNameOfFileName path path.parent
 
 end Lint4

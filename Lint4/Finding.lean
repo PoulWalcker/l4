@@ -6,18 +6,12 @@ inductive Severity where
   | noGo | warning | couldBeBetter
   deriving BEq
 
-instance : ToString Severity where
-  toString
-    | .noGo => "No-Go"
-    | .warning => "Warning"
-    | .couldBeBetter => "Could Be Better"
-
 inductive Rule where
   | comment | manualTimer | unsafeCode | partialOperation | unfinishedProof
   | unprotectedSignature | discardedVerdict | vacuousAssertion | caughtFailure | effectInPureModule | forbiddenDependency
   | errorFallback | serializedJsonSearch | emptyHandler | partialRecursion | axiomDependency | debugTrace
-  | formattedErrorSearch | lostResult | constantSuccess | constantFailure | unconditionalRetry
-  | nonLeanFile | skippedAssertion | wholeJsonEquality
+  | formattedErrorSearch | lostResult | constantSuccess | constantFailure | unconditionalRetry | runtimeImplementation
+  | nonLeanFile | skippedAssertion | wholeJsonEquality | scalarBranch
   deriving BEq, Lean.ToJson, Lean.FromJson
 
 private def Rule.metadata : Rule → String × Severity
@@ -43,9 +37,11 @@ private def Rule.metadata : Rule → String × Severity
   | .constantSuccess => ("W17", .warning)
   | .constantFailure => ("W19", .warning)
   | .unconditionalRetry => ("W20", .warning)
+  | .runtimeImplementation => ("W21", .warning)
   | .nonLeanFile => ("B03", .warning)
   | .skippedAssertion => ("C03", .couldBeBetter)
   | .wholeJsonEquality => ("C05", .couldBeBetter)
+  | .scalarBranch => ("C06", .couldBeBetter)
 
 def Rule.code (rule : Rule) : String := rule.metadata.1
 def Rule.severity (rule : Rule) : Severity := rule.metadata.2
