@@ -45,7 +45,6 @@ private structure FamilyPath where
 private def FamilyPath.visit (path : FamilyPath) (type : Expr) (name : Name) : MetaM (Option FamilyPath) := do
   let key := type.abstract ((collectFVars {} type).fvarIds.map mkFVar)
   if path.instances.contains key then return none
-  -- Changing a constructor tag changes reachability but does not grow an index.
   let shape := key.replace fun e => if e.isConst then some (mkConst .anonymous) else none
   let maxShapes := 64
   if !path.shapes.contains shape && path.shapes.size >= maxShapes && !path.parent?.any (key.occurs ·) then

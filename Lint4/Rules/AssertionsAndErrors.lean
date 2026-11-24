@@ -43,7 +43,6 @@ private def assertionGuard? (locals : LocalContext) (expr : Expr) : MetaM (Optio
   return guardOf (unwrap locals (mkAppN body expr.getAppArgs).headBeta)
 
 private def checksBeforeContinuation (success failure : Expr) : Bool := Id.run do
-  -- The do elaborator shares the code following an inline guard across both branches.
   unless success.isApp && failure.isAppOf ``Bind.bind do return false
   let #[_, inst, _, _, action, tail] := failure.getAppArgs | return false
   unless inst.isAppOf ``Monad.toBind && (inst.appArg!.isAppOf ``instMonadEIO ||
