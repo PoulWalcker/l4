@@ -1,7 +1,9 @@
 import Lean
-import Support.Assertions
 
 open Lean
+
+def Spec.requireThat (label : String) (condition : Bool) : Except String Unit :=
+  unless condition do throw label
 
 def observe (cmd : IO.Process.SpawnArgs) : IO Unit := do
   let output ← IO.Process.output cmd
