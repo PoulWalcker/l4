@@ -1,3 +1,5 @@
+import Lean.Data.Json
+
 namespace Lint4
 
 inductive Severity where
@@ -16,7 +18,7 @@ inductive Rule where
   | errorFallback | serializedJsonSearch | emptyHandler | partialRecursion | axiomDependency | debugTrace
   | formattedErrorSearch | lostResult | constantSuccess | constantFailure | unconditionalRetry
   | nonLeanFile | skippedAssertion | wholeJsonEquality
-  deriving BEq
+  deriving BEq, Lean.ToJson, Lean.FromJson
 
 private def Rule.metadata : Rule → String × Severity
   | .comment => ("N01", .noGo)
@@ -52,6 +54,6 @@ structure Finding where
   line : Nat
   rule : Rule
   detail : String
-  deriving BEq
+  deriving BEq, Lean.ToJson, Lean.FromJson
 
 end Lint4

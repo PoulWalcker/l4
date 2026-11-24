@@ -3,11 +3,12 @@ import Lean
 open System
 
 private def check (binary project : FilePath) (target : String) (code : UInt32)
-    (expected : List String) (errorText : List String := []) : IO Unit := do
+    (blocks : List String) (counts : Nat × Nat × Nat) (footer := "") (errorText : List String := []) : IO Unit := do
   let out ← IO.Process.output { cmd := binary.toString, args := #[target], cwd := project }
-  let lines := out.stdout.trimAscii.toString.splitOn "\n"
-  let stdoutMatches := lines.length == expected.length &&
-    (lines.zip expected).all fun (line, suffix) => line.endsWith suffix
+  let (blockers, warnings, suggestions) := counts
+  let summary := s!"Summary:\n  No-Go:           {blockers}\n  Warning:         {warnings}\n  Could Be Better: {suggestions}"
+  let expected := String.intercalate "\n\n" (blocks ++ [summary]) ++ footer ++ "\n"
+  let stdoutMatches := out.stdout.replace "\r\n" "\n" == expected
   let stderrMatches := if errorText.isEmpty then out.stderr.isEmpty else errorText.all (out.stderr.contains ·)
   unless out.exitCode == code && stdoutMatches && stderrMatches do
     throw <| IO.userError s!"{target}: expected exit {code} and {expected}\ngot {out.exitCode}\n{out.stdout}{out.stderr}"
@@ -44,10 +45,10 @@ public def ready : Bool := enabled
     discard <| IO.Process.run { cmd := "lake", args := #["build", "+Support.Adapter", "+Observe"], cwd := project }
 
     check binary project "Observe.lean" 0 [
-      "Observe.lean:9: [Warning] Process exit status is unobserved [W16]",
-      "Observe.lean:11: [Could Be Better] Option.none skips \"ready\" [C03]",
-      "Observe.lean:12: [Could Be Better] Assertion compares an entire JSON object for equality [C05]",
-      "Observe.lean:18: [Warning] Discarded file read or spawned process [W16]"]
+      "[WARNING] W16 — Process exit status is unobserved\nObserve.lean:9",
+      "[WARNING] W16 — Discarded file read or spawned process\nObserve.lean:18",
+      "[CBB] C03 — Option.none skips \"ready\"\nObserve.lean:11",
+      "[CBB] C05 — Assertion compares an entire JSON object for equality\nObserve.lean:12"] (0, 2, 2)
 
     write "client/Checks/Rejection.lean" r#"import Observe
 import Lean
@@ -65,16 +66,16 @@ example : True := by
   trivial
 "#
     check binary project "client/Checks/Rejection.lean" 1 [
-      "Rejection.lean:7: [No-Go] Discarded Spec.requireThat verdict [N07]",
-      "Rejection.lean:10: [No-Go] Catch suppresses the final throw in its own try block [N09]"]
+      "[NO-GO] N07 — Discarded Spec.requireThat verdict\nclient/Checks/Rejection.lean:7",
+      "[NO-GO] N09 — Catch suppresses the final throw in its own try block\nclient/Checks/Rejection.lean:10"] (2, 0, 0)
 
     check binary project "spec/Delivery.lean" 1 [
-      "Delivery.lean:13: [No-Go] Unprotected domain type: receipt parameter batch in Array field Message.mk.state field Delivery.sent.round via Round uses raw Int [N06]",
-      "Delivery.lean:21: [No-Go] Unprotected domain type: receive parameter _payload field Payload.nest.item field Payload.raw.value uses raw Nat [N06]",
-      "Delivery.lean:26: [No-Go] Unprotected domain type: decodeLabel parameter text in Except error uses raw String [N06]",
-      "Delivery.lean:26: [No-Go] Unprotected domain type: decodeLabel parameter text in Except success uses raw String [N06]",
-      "Delivery.lean:29: [No-Go] Partial operation: GetElem?.getElem! at \"xs[0]!\" [N04]",
-      "Delivery.lean:29: [No-Go] Partial operation: List.head! [N04]"]
+      "[NO-GO] N06 — Unprotected domain type: receipt parameter batch in Array field Message.mk.state field Delivery.sent.round via Round uses raw Int\nspec/Delivery.lean:13",
+      "[NO-GO] N06 — Unprotected domain type: receive parameter _payload field Payload.nest.item field Payload.raw.value uses raw Nat\nspec/Delivery.lean:21",
+      "[NO-GO] N06 — Unprotected domain type: decodeLabel parameter text in Except error uses raw String\nspec/Delivery.lean:26",
+      "[NO-GO] N06 — Unprotected domain type: decodeLabel parameter text in Except success uses raw String\nspec/Delivery.lean:26",
+      "[NO-GO] N04 — Partial operation: GetElem?.getElem! at \"xs[0]!\"\nspec/Delivery.lean:29",
+      "[NO-GO] N04 — Partial operation: List.head!\nspec/Delivery.lean:29"] (6, 0, 0)
 
     write "pure/Decision.lean" r#"module
 import Support.Adapter
@@ -82,8 +83,8 @@ import Support.Adapter
 public def decision : IO Bool := pure ready
 "#
     check binary project "pure/Decision.lean" 1 [
-      "Decision.lean:2: [No-Go] Forbidden module dependency: Support.Adapter → io.Driver [I02]",
-      "Decision.lean:4: [No-Go] Declaration type or body references an IO effect [I01]"]
+      "[NO-GO] I02 — Forbidden module dependency: Support.Adapter → io.Driver\npure/Decision.lean:2",
+      "[NO-GO] I01 — Declaration type or body references an IO effect\npure/Decision.lean:4"] (2, 0, 0)
 
     write "scan/spec/Growing.lean" r#"inductive Chain : Nat → Type where
   | stop (n : Nat) : Chain n
@@ -95,8 +96,8 @@ def check (_ : Chain 0) : IO Unit := pure ()
     write "scan/spec/Broken.lean" "def broken : Nat := true\n"
     write "scan/spec/Boot.lean" "def waitForBoot := IO.sleep 10\ndef boot : IO Unit := waitForBoot\n"
     check binary project "scan" 2 [
-      "response.json: [Warning] Non-Lean file under spec/ [B03]",
-      "Boot.lean:1: [No-Go] Manual timer: IO.sleep [N02]",
-      "Boot.lean:2: [No-Go] Manual timer: IO.sleep [N02]",
-      "Audit incomplete | Lean files: 3 | Files with No-Go: 1 | Analysis errors: 2"]
+      "[NO-GO] N02 — Manual timer: IO.sleep\nscan/spec/Boot.lean:1",
+      "[NO-GO] N02 — Manual timer: IO.sleep\nscan/spec/Boot.lean:2",
+      "[WARNING] B03 — Non-Lean file under spec/\nscan/spec/response.json"] (2, 1, 0)
+      "\nAudit incomplete | Lean files: 3 | Files with No-Go: 1 | Analysis errors: 2"
       ["Broken.lean", "Type mismatch", "Growing.lean", "N06 could not finish inspecting Chain"]
